@@ -6,7 +6,7 @@ import {
   type TokenExchangeCallbackResult,
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
-import { renderConsent } from "./consent";
+import { renderConsent, renderErrorPage } from "./consent";
 import { audit, getSite, getSiteByBaseUrl } from "./db";
 import { exchangeFrappeCode, getLoggedUser, refreshFrappeToken } from "./frappe";
 import {
@@ -39,7 +39,12 @@ authApp.get("/authorize", async (context) => {
   }
 
   const client = await context.env.OAUTH_PROVIDER.lookupClient(oauthRequest.clientId);
-  if (!client) return new Response("Unknown OAuth client.", { status: 400 });
+  if (!client) {
+    return htmlResponse(
+      renderErrorPage("Unknown MCP client", "This client is not registered with the NexWave MCP gateway."),
+      400,
+    );
+  }
 
   const pendingId = randomToken();
   const csrfToken = randomToken();
@@ -52,7 +57,8 @@ authApp.get("/authorize", async (context) => {
     expirationTtl: AUTH_TTL_SECONDS,
   });
 
-  return htmlResponse(renderConsent(client, oauthRequest, pendingId, csrfToken));
+  const scriptNonce = randomToken();
+  return htmlResponse(renderConsent(client, oauthRequest, pendingId, csrfToken, { scriptNonce }), 200, scriptNonce);
 });
 
 authApp.post("/authorize", async (context) => {
@@ -61,20 +67,37 @@ authApp.post("/authorize", async (context) => {
   const csrfToken = formValue(form, "csrf_token");
   const stored = await context.env.OAUTH_KV.get<PendingAuthorization>(`nexwave:pending:${pendingId}`, "json");
   if (!stored || (await sha256(csrfToken)) !== stored.csrfTokenHash) {
-    return new Response("The approval request has expired or is invalid.", { status: 400 });
+    return htmlResponse(
+      renderErrorPage("Connection request expired", "The approval request is no longer valid."),
+      400,
+    );
   }
-  await context.env.OAUTH_KV.delete(`nexwave:pending:${pendingId}`);
 
   if (form.get("decision") !== "approve") {
+    await context.env.OAUTH_KV.delete(`nexwave:pending:${pendingId}`);
     return oauthDeniedResponse(stored.oauthRequest);
   }
 
-  const site = await findRequestedSite(context.env, form.get("site_url"));
+  const submittedSiteUrl = form.get("site_url");
+  const siteUrl = typeof submittedSiteUrl === "string" ? submittedSiteUrl : "";
+  const site = await findRequestedSite(context.env, siteUrl);
   if (!site || !site.enabled) {
-    return new Response("The NexWave site is not available. Check the URL or contact your administrator.", {
-      status: 400,
-    });
+    const client = await context.env.OAUTH_PROVIDER.lookupClient(stored.oauthRequest.clientId);
+    if (!client) {
+      return htmlResponse(renderErrorPage("Unknown MCP client", "This client is no longer registered."), 400);
+    }
+    const scriptNonce = randomToken();
+    return htmlResponse(
+      renderConsent(client, stored.oauthRequest, pendingId, csrfToken, {
+        scriptNonce,
+        siteUrl,
+        error: "Check the site URL, or ask your administrator to add this site to the gateway.",
+      }),
+      400,
+      scriptNonce,
+    );
   }
+  await context.env.OAUTH_KV.delete(`nexwave:pending:${pendingId}`);
 
   const state = randomToken();
   const browserToken = randomToken();
@@ -112,11 +135,19 @@ authApp.get("/oauth/frappe/callback", async (context) => {
   const stored = state
     ? await context.env.OAUTH_KV.get<PendingFrappeAuthorization>(`nexwave:frappe:${state}`, "json")
     : null;
-  if (!stored) return new Response("The NexWave sign-in request has expired or is invalid.", { status: 400 });
+  if (!stored) {
+    return htmlResponse(
+      renderErrorPage("Sign-in request expired", "The NexWave sign-in request is no longer valid."),
+      400,
+    );
+  }
 
   const browserToken = getCookie(context.req.raw, cookieName(context.req.raw));
   if (!browserToken || (await sha256(browserToken)) !== stored.browserTokenHash) {
-    return new Response("The browser session does not match this sign-in request.", { status: 400 });
+    return htmlResponse(
+      renderErrorPage("Browser session changed", "Complete the connection in the same browser where you started it."),
+      400,
+    );
   }
   await context.env.OAUTH_KV.delete(`nexwave:frappe:${state}`);
 
@@ -125,7 +156,13 @@ authApp.get("/oauth/frappe/callback", async (context) => {
   }
 
   const site = await getSite(context.env, stored.siteId);
-  if (!site || !site.enabled) return new Response("The selected NexWave site is not available.", { status: 400 });
+  if (!site || !site.enabled) {
+    return oauthErrorResponse(
+      stored.oauthRequest,
+      "temporarily_unavailable",
+      "The selected NexWave site is not available.",
+    );
+  }
 
   try {
     const clientSecret = await decryptSecret(site.encrypted_client_secret, context.env.CONFIG_ENCRYPTION_KEY);
@@ -165,7 +202,11 @@ authApp.get("/oauth/frappe/callback", async (context) => {
     });
   } catch (error) {
     await audit(context.env, "oauth_failed", site.id, undefined, safeError(error));
-    return new Response(`NexWave sign-in failed: ${safeError(error)}`, { status: 502 });
+    return oauthErrorResponse(
+      stored.oauthRequest,
+      "server_error",
+      "NexWave sign-in could not be completed. Please try again.",
+    );
   }
 });
 
@@ -211,8 +252,12 @@ function authorizationErrorResponse(error: unknown): Response {
 }
 
 function oauthDeniedResponse(request: AuthRequest, description = "The user cancelled the request."): Response {
+  return oauthErrorResponse(request, "access_denied", description);
+}
+
+function oauthErrorResponse(request: AuthRequest, code: string, description: string): Response {
   const redirect = new URL(request.redirectUri);
-  redirect.searchParams.set("error", "access_denied");
+  redirect.searchParams.set("error", code);
   redirect.searchParams.set("error_description", description);
   if (request.state) redirect.searchParams.set("state", request.state);
   if (request.issuer) redirect.searchParams.set("iss", request.issuer);
@@ -233,11 +278,13 @@ function safeError(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected error.";
 }
 
-function htmlResponse(body: string): Response {
+function htmlResponse(body: string, status = 200, scriptNonce?: string): Response {
+  const scriptPolicy = scriptNonce ? `; script-src 'nonce-${scriptNonce}'` : "";
   return new Response(body, {
+    status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'${scriptPolicy}`,
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     },
