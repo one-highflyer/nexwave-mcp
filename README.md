@@ -16,7 +16,7 @@ It does not require a custom Frappe app. It does not use `frappe_assistant_core`
 
 - Setup page: `https://nexwave-mcp.hello-d72.workers.dev/admin`
 - MCP endpoint: `https://nexwave-mcp.hello-d72.workers.dev/mcp`
-- Connected test site: `https://nexwavedemo.highflyer.global`
+- Connected test site: configured privately in the hosted setup page
 
 The setup page needs the `ADMIN_TOKEN` Worker secret. A local recovery copy is in the ignored `.prod.vars` file for this POC. Move it to the team password manager before other people operate the service.
 
