@@ -58,7 +58,7 @@ Create a new numbered migration for a D1 schema change. Do not edit a migration 
 
 ## GitHub and deployment
 
-- Work on a branch and use a pull request. The protected `main` branch requires one approval and the `Validate` CI check.
+- Work on a branch and use a pull request. The protected `main` branch requires the `Validate` CI check and one approval for contributors without an explicit bypass. The current repository administrators can bypass the approval requirement.
 - Use short, conventional-style commit messages.
 - Keep public commit messages, pull requests, tests, and fixtures free of customer-specific information.
 - CI validates the Worker but does not deploy it.

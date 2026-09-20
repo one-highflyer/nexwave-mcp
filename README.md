@@ -205,6 +205,6 @@ npm test
 npx wrangler deploy --dry-run
 ```
 
-The protected `main` branch requires a pull request, one approval, resolved review conversations, and a passing `Validate` check.
+The protected `main` branch requires a pull request, resolved review conversations, and a passing `Validate` check. Contributors need one approval; the current repository administrators can bypass the approval requirement.
 
 See [AGENTS.md](AGENTS.md) for contributor and coding-agent rules.
