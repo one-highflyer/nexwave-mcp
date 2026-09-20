@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authenticateServiceMcpRequest,
+  handleServiceMcpRequest,
   SERVICE_MCP_TOKEN_HEADER,
 } from "../src/service-mcp";
 import { encryptSecret, sha256 } from "../src/security";
@@ -9,6 +10,8 @@ import type { Env, SiteRecord } from "../src/types";
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
 describe("service MCP authentication", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("maps a valid gateway token to a registered site's API token", async () => {
     const site = await apiTokenSite();
     const result = await authenticateServiceMcpRequest(serviceRequest("gateway-token"), serviceEnv(site));
@@ -63,11 +66,77 @@ describe("service MCP authentication", () => {
 
     expect("response" in result && result.response.status).toBe(503);
   });
+
+  it("accepts null values for optional tool arguments", async () => {
+    const site = await apiTokenSite();
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        data: [{ name: "INV-00001", status: "Unpaid", outstanding_amount: 125 }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleServiceMcpRequest(
+      serviceToolRequest("gateway-token", {
+        search: null,
+        limit: 50,
+        company: null,
+        customer: null,
+        status: "Unpaid",
+        from_date: null,
+        to_date: "2026-09-20",
+      }),
+      serviceEnv(site),
+      executionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    const dataLine = body.split("\n").find((line) => line.startsWith("data: "));
+    const payload = JSON.parse(dataLine?.slice(6) ?? "null") as {
+      result?: { content?: Array<{ text?: string }> };
+    };
+    expect(JSON.parse(payload.result?.content?.[0]?.text ?? "null")).toEqual([
+      { name: "INV-00001", status: "Unpaid", outstanding_amount: 125 },
+    ]);
+
+    const [url] = fetchMock.mock.calls[0];
+    const upstream = new URL(String(url));
+    expect(JSON.parse(upstream.searchParams.get("filters") ?? "[]")).toEqual([
+      ["Sales Invoice", "status", "=", "Unpaid"],
+      ["Sales Invoice", "posting_date", "<=", "2026-09-20"],
+    ]);
+  });
 });
 
 function serviceRequest(token?: string): Request {
   const headers = token ? { [SERVICE_MCP_TOKEN_HEADER]: token } : undefined;
   return new Request("https://mcp.example.com/service/mcp", { method: "POST", headers });
+}
+
+function serviceToolRequest(token: string, args: Record<string, unknown>): Request {
+  return new Request("https://mcp.example.com/service/mcp", {
+    method: "POST",
+    headers: {
+      [SERVICE_MCP_TOKEN_HEADER]: token,
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "list_sales_invoices", arguments: args },
+    }),
+  });
+}
+
+function executionContext(): ExecutionContext {
+  return {
+    passThroughOnException: () => undefined,
+    waitUntil: () => undefined,
+    props: Object.create(null),
+  } as unknown as ExecutionContext;
 }
 
 function serviceEnv(site: SiteRecord | null): Env {

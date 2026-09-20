@@ -36,7 +36,7 @@ export function createNexWaveServer(): McpServer {
     "list_companies",
     {
       description: "List companies that the signed-in NexWave user can access.",
-      inputSchema: { limit: z.number().int().min(1).max(50).default(20) },
+      inputSchema: { limit: z.number().int().min(1).max(50).nullable().default(20) },
     },
     async ({ limit }) => {
       const props = await currentProps();
@@ -44,7 +44,7 @@ export function createNexWaveServer(): McpServer {
         props,
         "Company",
         ["name", "company_name", "abbr", "default_currency", "country"],
-        { limit, orderBy: "modified desc" },
+        { limit: limit ?? 20, orderBy: "modified desc" },
       );
       return textResult(data);
     },
@@ -55,8 +55,8 @@ export function createNexWaveServer(): McpServer {
     {
       description: "List customers visible to the signed-in NexWave user.",
       inputSchema: {
-        search: z.string().trim().max(100).optional(),
-        limit: z.number().int().min(1).max(50).default(20),
+        search: z.string().trim().max(100).nullish(),
+        limit: z.number().int().min(1).max(50).nullable().default(20),
       },
     },
     async ({ search, limit }) => {
@@ -68,7 +68,7 @@ export function createNexWaveServer(): McpServer {
         props,
         "Customer",
         [...READABLE_DOCTYPES.Customer],
-        { limit, orFilters, orderBy: "modified desc" },
+        { limit: limit ?? 20, orFilters, orderBy: "modified desc" },
       );
       return textResult(data);
     },
@@ -79,10 +79,10 @@ export function createNexWaveServer(): McpServer {
     {
       description: "List items visible to the signed-in NexWave user.",
       inputSchema: {
-        search: z.string().trim().max(100).optional(),
-        item_group: z.string().trim().min(1).max(140).optional(),
-        include_disabled: z.boolean().default(false),
-        limit: z.number().int().min(1).max(50).default(20),
+        search: z.string().trim().max(100).nullish(),
+        item_group: z.string().trim().min(1).max(140).nullish(),
+        include_disabled: z.boolean().nullable().default(false),
+        limit: z.number().int().min(1).max(50).nullable().default(20),
       },
     },
     async ({ search, item_group, include_disabled, limit }) => {
@@ -97,7 +97,7 @@ export function createNexWaveServer(): McpServer {
         props,
         "Item",
         [...READABLE_DOCTYPES.Item],
-        { limit, filters, orFilters, orderBy: "modified desc" },
+        { limit: limit ?? 20, filters, orFilters, orderBy: "modified desc" },
       );
       return textResult(data);
     },
@@ -108,8 +108,8 @@ export function createNexWaveServer(): McpServer {
     fields: ["name", "supplier_name", "supplier_group", "supplier_type", "country", "disabled"],
     searchFields: ["name", "supplier_name"],
     extraSchema: {
-      supplier_group: z.string().trim().min(1).max(140).optional(),
-      include_disabled: z.boolean().default(false),
+      supplier_group: z.string().trim().min(1).max(140).nullish(),
+      include_disabled: z.boolean().nullable().default(false),
     },
     filters: ({ supplier_group, include_disabled }) => [
       ...(supplier_group ? [["Supplier", "supplier_group", "=", supplier_group]] : []),
@@ -123,7 +123,7 @@ export function createNexWaveServer(): McpServer {
     searchFields: ["name", "warehouse_name"],
     extraSchema: {
       company: z.string().trim().min(1).max(140),
-      include_disabled: z.boolean().default(false),
+      include_disabled: z.boolean().nullable().default(false),
     },
     filters: ({ company, include_disabled }) => [
       ["Warehouse", "company", "=", company],
@@ -137,9 +137,9 @@ export function createNexWaveServer(): McpServer {
     searchFields: ["name", "account_name", "account_number"],
     extraSchema: {
       company: z.string().trim().min(1).max(140),
-      root_type: z.enum(["Asset", "Liability", "Income", "Expense", "Equity"]).optional(),
-      account_type: z.string().trim().min(1).max(140).optional(),
-      include_disabled: z.boolean().default(false),
+      root_type: z.enum(["Asset", "Liability", "Income", "Expense", "Equity"]).nullish(),
+      account_type: z.string().trim().min(1).max(140).nullish(),
+      include_disabled: z.boolean().nullable().default(false),
     },
     filters: ({ company, root_type, account_type, include_disabled }) => [
       ["Account", "company", "=", company],
@@ -155,7 +155,7 @@ export function createNexWaveServer(): McpServer {
     searchFields: ["name", "cost_center_name"],
     extraSchema: {
       company: z.string().trim().min(1).max(140),
-      include_disabled: z.boolean().default(false),
+      include_disabled: z.boolean().nullable().default(false),
     },
     filters: ({ company, include_disabled }) => [
       ["Cost Center", "company", "=", company],
@@ -169,7 +169,7 @@ export function createNexWaveServer(): McpServer {
     searchFields: ["name", "project_name"],
     extraSchema: {
       company: z.string().trim().min(1).max(140),
-      status: z.enum(["Open", "Completed", "Cancelled"]).optional(),
+      status: z.enum(["Open", "Completed", "Cancelled"]).nullish(),
     },
     filters: ({ company, status }) => [
       ["Project", "company", "=", company],
@@ -181,7 +181,7 @@ export function createNexWaveServer(): McpServer {
     description: "List enabled NexWave fiscal years, optionally limited to the fiscal year containing a date.",
     fields: ["name", "year_start_date", "year_end_date", "disabled"],
     searchFields: ["name"],
-    extraSchema: { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() },
+    extraSchema: { date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish() },
     filters: ({ date }) => [
       ["Fiscal Year", "disabled", "=", 0],
       ...(date ? [["Fiscal Year", "year_start_date", "<=", date], ["Fiscal Year", "year_end_date", ">=", date]] : []),
@@ -193,11 +193,11 @@ export function createNexWaveServer(): McpServer {
     fields: [...READABLE_DOCTYPES["Sales Invoice"]],
     searchFields: ["name", "customer_name"],
     extraSchema: {
-      company: z.string().trim().min(1).max(140).optional(),
-      customer: z.string().trim().min(1).max(140).optional(),
-      status: z.string().trim().min(1).max(50).optional(),
-      from_date: DATE.optional(),
-      to_date: DATE.optional(),
+      company: z.string().trim().min(1).max(140).nullish(),
+      customer: z.string().trim().min(1).max(140).nullish(),
+      status: z.string().trim().min(1).max(50).nullish(),
+      from_date: DATE.nullish(),
+      to_date: DATE.nullish(),
     },
     filters: ({ company, customer, status, from_date, to_date }) => [
       ...(company ? [["Sales Invoice", "company", "=", company]] : []),
@@ -213,11 +213,11 @@ export function createNexWaveServer(): McpServer {
     fields: [...READABLE_DOCTYPES["Purchase Invoice"]],
     searchFields: ["name", "supplier_name"],
     extraSchema: {
-      company: z.string().trim().min(1).max(140).optional(),
-      supplier: z.string().trim().min(1).max(140).optional(),
-      status: z.string().trim().min(1).max(50).optional(),
-      from_date: DATE.optional(),
-      to_date: DATE.optional(),
+      company: z.string().trim().min(1).max(140).nullish(),
+      supplier: z.string().trim().min(1).max(140).nullish(),
+      status: z.string().trim().min(1).max(50).nullish(),
+      from_date: DATE.nullish(),
+      to_date: DATE.nullish(),
     },
     filters: ({ company, supplier, status, from_date, to_date }) => [
       ...(company ? [["Purchase Invoice", "company", "=", company]] : []),
@@ -233,13 +233,13 @@ export function createNexWaveServer(): McpServer {
     fields: [...READABLE_DOCTYPES["Payment Entry"]],
     searchFields: ["name", "party_name", "reference_no"],
     extraSchema: {
-      company: z.string().trim().min(1).max(140).optional(),
-      payment_type: z.enum(["Receive", "Pay", "Internal Transfer"]).optional(),
-      party_type: z.string().trim().min(1).max(140).optional(),
-      party: z.string().trim().min(1).max(140).optional(),
-      status: z.enum(["Draft", "Submitted", "Cancelled"]).optional(),
-      from_date: DATE.optional(),
-      to_date: DATE.optional(),
+      company: z.string().trim().min(1).max(140).nullish(),
+      payment_type: z.enum(["Receive", "Pay", "Internal Transfer"]).nullish(),
+      party_type: z.string().trim().min(1).max(140).nullish(),
+      party: z.string().trim().min(1).max(140).nullish(),
+      status: z.enum(["Draft", "Submitted", "Cancelled"]).nullish(),
+      from_date: DATE.nullish(),
+      to_date: DATE.nullish(),
     },
     filters: ({ company, payment_type, party_type, party, status, from_date, to_date }) => [
       ...(company ? [["Payment Entry", "company", "=", company]] : []),
@@ -257,11 +257,11 @@ export function createNexWaveServer(): McpServer {
     fields: [...READABLE_DOCTYPES["Bank Transaction"]],
     searchFields: ["name", "description", "reference_number"],
     extraSchema: {
-      company: z.string().trim().min(1).max(140).optional(),
-      bank_account: z.string().trim().min(1).max(140).optional(),
-      status: z.enum(["Pending", "Settled", "Unreconciled", "Reconciled", "Cancelled"]).optional(),
-      from_date: DATE.optional(),
-      to_date: DATE.optional(),
+      company: z.string().trim().min(1).max(140).nullish(),
+      bank_account: z.string().trim().min(1).max(140).nullish(),
+      status: z.enum(["Pending", "Settled", "Unreconciled", "Reconciled", "Cancelled"]).nullish(),
+      from_date: DATE.nullish(),
+      to_date: DATE.nullish(),
     },
     filters: ({ company, bank_account, status, from_date, to_date }) => [
       ...(company ? [["Bank Transaction", "company", "=", company]] : []),
@@ -277,8 +277,8 @@ export function createNexWaveServer(): McpServer {
     {
       description: "List recent sales orders visible to the signed-in NexWave user.",
       inputSchema: {
-        status: z.string().trim().max(50).optional(),
-        limit: z.number().int().min(1).max(50).default(20),
+        status: z.string().trim().max(50).nullish(),
+        limit: z.number().int().min(1).max(50).nullable().default(20),
       },
     },
     async ({ status, limit }) => {
@@ -288,7 +288,7 @@ export function createNexWaveServer(): McpServer {
         props,
         "Sales Order",
         [...READABLE_DOCTYPES["Sales Order"]],
-        { limit, filters, orderBy: "modified desc" },
+        { limit: limit ?? 20, filters, orderBy: "modified desc" },
       );
       return textResult(data);
     },
@@ -366,8 +366,8 @@ function registerLookupTool(
     {
       description: options.description,
       inputSchema: {
-        search: z.string().trim().max(100).optional(),
-        limit: z.number().int().min(1).max(50).default(20),
+        search: z.string().trim().max(100).nullish(),
+        limit: z.number().int().min(1).max(50).nullable().default(20),
         ...options.extraSchema,
       },
     },
