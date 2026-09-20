@@ -2,22 +2,22 @@ import {
   AuthorizationError,
   GrantType,
   type AuthRequest,
-  type ClientInfo,
   type TokenExchangeCallbackOptions,
   type TokenExchangeCallbackResult,
 } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
-import { audit, getSite, listSites } from "./db";
+import { renderConsent } from "./consent";
+import { audit, getSite, getSiteByBaseUrl } from "./db";
 import { exchangeFrappeCode, getLoggedUser, refreshFrappeToken } from "./frappe";
 import {
   clearCookie,
   cookieName,
   decryptSecret,
-  escapeHtml,
   getCookie,
   makeCookie,
   pkceChallenge,
   randomToken,
+  siteOriginFromInput,
   sha256,
 } from "./security";
 import type { Env, NexWaveAuthProps, PendingAuthorization, PendingFrappeAuthorization } from "./types";
@@ -38,10 +38,7 @@ authApp.get("/authorize", async (context) => {
     return authorizationErrorResponse(error);
   }
 
-  const [client, sites] = await Promise.all([
-    context.env.OAUTH_PROVIDER.lookupClient(oauthRequest.clientId),
-    listSites(context.env, true),
-  ]);
+  const client = await context.env.OAUTH_PROVIDER.lookupClient(oauthRequest.clientId);
   if (!client) return new Response("Unknown OAuth client.", { status: 400 });
 
   const pendingId = randomToken();
@@ -55,7 +52,7 @@ authApp.get("/authorize", async (context) => {
     expirationTtl: AUTH_TTL_SECONDS,
   });
 
-  return htmlResponse(renderConsent(client, oauthRequest, sites, pendingId, csrfToken));
+  return htmlResponse(renderConsent(client, oauthRequest, pendingId, csrfToken));
 });
 
 authApp.post("/authorize", async (context) => {
@@ -72,16 +69,19 @@ authApp.post("/authorize", async (context) => {
     return oauthDeniedResponse(stored.oauthRequest);
   }
 
-  const siteId = formValue(form, "site_id");
-  const site = await getSite(context.env, siteId);
-  if (!site || !site.enabled) return new Response("The selected NexWave site is not available.", { status: 400 });
+  const site = await findRequestedSite(context.env, form.get("site_url"));
+  if (!site || !site.enabled) {
+    return new Response("The NexWave site is not available. Check the URL or contact your administrator.", {
+      status: 400,
+    });
+  }
 
   const state = randomToken();
   const browserToken = randomToken();
   const codeVerifier = randomToken(64);
   const upstream: PendingFrappeAuthorization = {
     oauthRequest: stored.oauthRequest,
-    siteId,
+    siteId: site.id,
     browserTokenHash: await sha256(browserToken),
     codeVerifier,
     createdAt: Date.now(),
@@ -190,20 +190,13 @@ function upstreamTtl(props: NexWaveAuthProps): number {
   return Math.max(60, Math.min(3600, Math.floor((props.upstreamExpiresAt - Date.now()) / 1000)));
 }
 
-function renderConsent(
-  client: ClientInfo,
-  request: AuthRequest,
-  sites: Awaited<ReturnType<typeof listSites>>,
-  pendingId: string,
-  csrfToken: string,
-): string {
-  const clientName = client.clientName || "An MCP client";
-  const options = sites.length
-    ? sites.map((site) => `<option value="${escapeHtml(site.id)}">${escapeHtml(site.display_name)} (${escapeHtml(site.base_url)})</option>`).join("")
-    : '<option value="">No NexWave sites are available</option>';
-  const scopeText = request.scope.length ? request.scope.join(", ") : LOCAL_SCOPE;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Connect NexWave</title><style>
-  :root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#172034;background:#f3f6fb}body{margin:0;display:grid;min-height:100vh;place-items:center}.card{box-sizing:border-box;width:min(500px,calc(100% - 32px));background:#fff;border:1px solid #dce3ef;border-radius:18px;padding:28px;box-shadow:0 16px 50px rgba(28,45,78,.1)}h1{margin:0 0 12px;font-size:28px}p{color:#59667d;line-height:1.55}label{display:block;font-size:13px;font-weight:750;margin:22px 0 7px}select{box-sizing:border-box;width:100%;padding:12px;border:1px solid #bdc8d9;border-radius:9px;background:#fff;font:inherit}.scope{background:#f2f6fa;border-radius:9px;padding:11px;color:#3f4c61;font-size:14px}.actions{display:flex;gap:10px;margin-top:22px}button{border:0;border-radius:9px;padding:11px 17px;font:inherit;font-weight:750;cursor:pointer}.approve{background:#087a65;color:#fff}.cancel{background:#e9eef5;color:#3f4c61}</style></head><body><main class="card"><h1>Connect to NexWave</h1><p><strong>${escapeHtml(clientName)}</strong> wants read-only access to a NexWave site through this MCP server.</p><div class="scope">Requested access: ${escapeHtml(scopeText)}</div><form method="post" action="/authorize"><input type="hidden" name="pending_id" value="${escapeHtml(pendingId)}"><input type="hidden" name="csrf_token" value="${escapeHtml(csrfToken)}"><label for="site_id">NexWave site</label><select id="site_id" name="site_id" required ${sites.length ? "" : "disabled"}>${options}</select><div class="actions"><button class="approve" name="decision" value="approve" ${sites.length ? "" : "disabled"}>Continue to NexWave</button><button class="cancel" name="decision" value="deny">Cancel</button></div></form></main></body></html>`;
+async function findRequestedSite(env: Env, value: FormDataEntryValue | null) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    return await getSiteByBaseUrl(env, siteOriginFromInput(value));
+  } catch {
+    return null;
+  }
 }
 
 function authorizationErrorResponse(error: unknown): Response {

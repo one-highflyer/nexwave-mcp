@@ -115,7 +115,7 @@ Then register the site at `/admin`. The MCP server URL is:
 https://nexwave-mcp.example.workers.dev/mcp
 ```
 
-MCP clients can use OAuth discovery and dynamic client registration. The Worker shows a consent page, sends the user to the selected NexWave site, and then returns control to the MCP client.
+MCP clients can use OAuth discovery and dynamic client registration. The Worker asks the user for their NexWave site URL, matches its origin against the private site registry, sends the user to that site, and then returns control to the MCP client. It never shows users a list of registered sites.
 
 ## Security notes
 
@@ -126,6 +126,7 @@ MCP clients can use OAuth discovery and dynamic client registration. The Worker 
 - The admin API needs a separate bearer token.
 - Site URLs must use HTTPS. HTTP is accepted only for local development hosts.
 - The MCP tools do not accept arbitrary Frappe methods or URLs.
+- The public consent page does not enumerate registered site names or URLs.
 
 This POC stores an audit event for successful and failed sign-ins. It does not yet provide a full audit viewer, write tools, per-tool scope controls, or managed secret rotation.
 

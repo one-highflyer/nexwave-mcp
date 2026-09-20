@@ -16,6 +16,14 @@ export async function getSite(env: Env, id: string): Promise<SiteRecord | null> 
     .first<SiteRecord>();
 }
 
+export async function getSiteByBaseUrl(env: Env, baseUrl: string): Promise<SiteRecord | null> {
+  return env.NEXWAVE_MCP_DB.prepare(
+    "SELECT id, display_name, base_url, client_id, encrypted_client_secret, enabled, created_at, updated_at FROM sites WHERE base_url = ?",
+  )
+    .bind(baseUrl)
+    .first<SiteRecord>();
+}
+
 export async function createSite(env: Env, site: Omit<SiteRecord, "created_at" | "updated_at">): Promise<void> {
   await env.NEXWAVE_MCP_DB.prepare(
     "INSERT INTO sites (id, display_name, base_url, client_id, encrypted_client_secret, enabled) VALUES (?, ?, ?, ?, ?, ?)",

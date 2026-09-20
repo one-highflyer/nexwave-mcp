@@ -45,15 +45,21 @@ export async function decryptSecret(value: string, base64Key: string): Promise<s
 
 export function safeBaseUrl(value: string): string {
   const url = new URL(value);
-  const isLocal = url.hostname === "localhost" || url.hostname.endsWith(".localhost") || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(isLocal && url.protocol === "http:")) {
-    throw new Error("Use an HTTPS URL. HTTP is permitted only for localhost.");
-  }
+  requireSafeProtocol(url);
   if (url.username || url.password || url.search || url.hash) {
     throw new Error("The site URL cannot contain credentials, a query, or a fragment.");
   }
   if (url.pathname !== "/") {
     throw new Error("Enter the site origin without a path.");
+  }
+  return url.origin;
+}
+
+export function siteOriginFromInput(value: string): string {
+  const url = new URL(value.trim());
+  requireSafeProtocol(url);
+  if (url.username || url.password) {
+    throw new Error("The site URL cannot contain credentials.");
   }
   return url.origin;
 }
@@ -115,4 +121,11 @@ async function importEncryptionKey(base64Key: string): Promise<CryptoKey> {
     throw new Error("CONFIG_ENCRYPTION_KEY must be a base64-encoded 32-byte key.");
   }
   return crypto.subtle.importKey("raw", bytes.buffer as ArrayBuffer, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+function requireSafeProtocol(url: URL): void {
+  const isLocal = url.hostname === "localhost" || url.hostname.endsWith(".localhost") || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(isLocal && url.protocol === "http:")) {
+    throw new Error("Use an HTTPS URL. HTTP is permitted only for localhost.");
+  }
 }

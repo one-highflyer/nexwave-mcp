@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decryptSecret, encryptSecret, safeBaseUrl } from "../src/security";
+import { decryptSecret, encryptSecret, safeBaseUrl, siteOriginFromInput } from "../src/security";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
@@ -32,5 +32,15 @@ describe("site URL validation", () => {
     "https://user:password@demo.example.com/",
   ])("rejects an unsafe or non-origin URL: %s", (url) => {
     expect(() => safeBaseUrl(url)).toThrow();
+  });
+
+  it("extracts the origin from a NexWave page URL", () => {
+    expect(siteOriginFromInput("https://Demo.Example.com/app/home?view=workspace#main")).toBe(
+      "https://demo.example.com",
+    );
+  });
+
+  it("rejects credentials when extracting a site origin", () => {
+    expect(() => siteOriginFromInput("https://user:password@demo.example.com/app/home")).toThrow();
   });
 });
