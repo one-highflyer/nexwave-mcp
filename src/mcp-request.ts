@@ -1,5 +1,7 @@
+import { isJsonContentType } from "@modelcontextprotocol/server";
+
 export async function normaliseMcpToolArguments(request: Request): Promise<Request> {
-  if (request.method !== "POST" || !request.headers.get("Content-Type")?.includes("application/json")) {
+  if (request.method !== "POST" || !isJsonContentType(request.headers.get("Content-Type"))) {
     return request;
   }
 

@@ -20,8 +20,12 @@ describe("MCP request normalization", () => {
 
     const normalised = await normaliseMcpToolArguments(request);
 
-    await expect(normalised.json()).resolves.toMatchObject({
+    await expect(normalised.json()).resolves.toEqual({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
       params: {
+        name: "list_sales_invoices",
         arguments: { limit: 20, status: "Unpaid" },
       },
     });
@@ -36,8 +40,22 @@ describe("MCP request normalization", () => {
     const normalised = await normaliseMcpToolArguments(request);
     const payload = await normalised.json() as Array<Record<string, unknown>>;
 
-    expect(payload[0]).toMatchObject({ params: { arguments: { limit: 10 } } });
+    expect(payload[0]).toEqual({ method: "tools/call", params: { arguments: { limit: 10 } } });
     expect(payload[1]).toEqual({ method: "tools/list", params: {} });
+  });
+
+  it("accepts valid mixed-case JSON media types", async () => {
+    const request = jsonRequest(
+      { method: "tools/call", params: { arguments: { limit: null } } },
+      "Application/JSON; Charset=UTF-8",
+    );
+
+    const normalised = await normaliseMcpToolArguments(request);
+
+    await expect(normalised.json()).resolves.toEqual({
+      method: "tools/call",
+      params: { arguments: {} },
+    });
   });
 
   it("leaves non-tool requests unchanged", async () => {
@@ -47,10 +65,10 @@ describe("MCP request normalization", () => {
   });
 });
 
-function jsonRequest(payload: unknown): Request {
+function jsonRequest(payload: unknown, contentType = "application/json"): Request {
   return new Request("https://mcp.example.com/mcp", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": contentType },
     body: JSON.stringify(payload),
   });
 }
