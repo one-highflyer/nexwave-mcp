@@ -1,12 +1,13 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { frappeRunReport, type FrappeReportResult } from "./frappe";
+import { nullableDefault, nullableOptional } from "./schema";
 import type { NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
 const NAME = z.string().trim().min(1).max(140);
-const NAMES = z.array(NAME).max(20).nullish();
-const REPORT_LIMIT = z.number().int().min(1).max(200).nullable().default(100);
+const NAMES = nullableOptional(z.array(NAME).max(20));
+const REPORT_LIMIT = nullableDefault(z.number().int().min(1).max(200), 100);
 const PERIODICITY = z.enum(["Monthly", "Quarterly", "Half-Yearly", "Yearly"]);
 const STRUCTURAL_FIELDS = new Set([
   "indent",
@@ -36,8 +37,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         to_date: DATE,
         item_codes: NAMES,
         warehouses: NAMES,
-        item_group: NAME.nullish(),
-        include_zero_stock_items: z.boolean().nullable().default(false),
+        item_group: nullableOptional(NAME),
+        include_zero_stock_items: nullableDefault(z.boolean(), false),
         limit: REPORT_LIMIT,
       },
     },
@@ -72,10 +73,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         to_date: DATE,
         item_codes: NAMES,
         warehouses: NAMES,
-        item_group: NAME.nullish(),
-        batch_no: NAME.nullish(),
-        voucher_no: NAME.nullish(),
-        project: NAME.nullish(),
+        item_group: nullableOptional(NAME),
+        batch_no: nullableOptional(NAME),
+        voucher_no: nullableOptional(NAME),
+        project: nullableOptional(NAME),
         limit: REPORT_LIMIT,
       },
     },
@@ -110,10 +111,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         company: NAME,
         from_date: DATE,
         to_date: DATE,
-        periodicity: PERIODICITY.nullable().default("Yearly"),
+        periodicity: nullableDefault(PERIODICITY, "Yearly"),
         cost_centres: NAMES,
         projects: NAMES,
-        presentation_currency: z.string().trim().min(3).max(20).nullish(),
+        presentation_currency: nullableOptional(z.string().trim().min(3).max(20)),
         limit: REPORT_LIMIT,
       },
     },
@@ -152,8 +153,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         to_date: DATE,
         cost_centres: NAMES,
         projects: NAMES,
-        finance_book: NAME.nullish(),
-        presentation_currency: z.string().trim().min(3).max(20).nullish(),
+        finance_book: nullableOptional(NAME),
+        presentation_currency: nullableOptional(z.string().trim().min(3).max(20)),
         limit: REPORT_LIMIT,
       },
     },
@@ -192,13 +193,13 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         from_date: DATE,
         to_date: DATE,
         accounts: NAMES,
-        party_type: z.enum(["Customer", "Supplier", "Employee"]).nullish(),
+        party_type: nullableOptional(z.enum(["Customer", "Supplier", "Employee"])),
         parties: NAMES,
-        voucher_no: NAME.nullish(),
+        voucher_no: nullableOptional(NAME),
         cost_centres: NAMES,
         projects: NAMES,
-        finance_book: NAME.nullish(),
-        group_by: z.enum(["voucher", "voucher_consolidated", "account", "party"]).nullable().default("voucher_consolidated"),
+        finance_book: nullableOptional(NAME),
+        group_by: nullableDefault(z.enum(["voucher", "voucher_consolidated", "account", "party"]), "voucher_consolidated"),
         limit: REPORT_LIMIT,
       },
     },
@@ -243,9 +244,9 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         report_date: DATE,
         customers: NAMES,
         customer_groups: NAMES,
-        ageing_based_on: z.enum(["Posting Date", "Due Date"]).nullable().default("Due Date"),
-        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).nullable().default([30, 60, 90, 120]),
-        group_by_customer: z.boolean().nullable().default(false),
+        ageing_based_on: nullableDefault(z.enum(["Posting Date", "Due Date"]), "Due Date"),
+        ageing_ranges: nullableDefault(z.array(z.number().int().min(1).max(3650)).min(1).max(6), [30, 60, 90, 120]),
+        group_by_customer: nullableDefault(z.boolean(), false),
         cost_centres: NAMES,
         projects: NAMES,
         limit: REPORT_LIMIT,
@@ -287,9 +288,9 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         report_date: DATE,
         suppliers: NAMES,
         supplier_groups: NAMES,
-        ageing_based_on: z.enum(["Posting Date", "Due Date", "Supplier Invoice Date"]).nullable().default("Due Date"),
-        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).nullable().default([30, 60, 90, 120]),
-        group_by_supplier: z.boolean().nullable().default(false),
+        ageing_based_on: nullableDefault(z.enum(["Posting Date", "Due Date", "Supplier Invoice Date"]), "Due Date"),
+        ageing_ranges: nullableDefault(z.array(z.number().int().min(1).max(3650)).min(1).max(6), [30, 60, 90, 120]),
+        group_by_supplier: nullableDefault(z.boolean(), false),
         cost_centres: NAMES,
         projects: NAMES,
         limit: REPORT_LIMIT,
@@ -330,7 +331,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         company: NAME,
         account: NAME,
         report_date: DATE,
-        include_pos_transactions: z.boolean().nullable().default(false),
+        include_pos_transactions: nullableDefault(z.boolean(), false),
         limit: REPORT_LIMIT,
       },
     },
