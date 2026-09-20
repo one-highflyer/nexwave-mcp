@@ -123,7 +123,7 @@ authApp.post("/authorize", async (context) => {
   authorizeUrl.searchParams.set("code_challenge_method", "S256");
 
   return new Response(null, {
-    status: 302,
+    status: 303,
     headers: { Location: authorizeUrl.toString(), "Set-Cookie": makeCookie(context.req.raw, browserToken) },
   });
 });
