@@ -1,4 +1,4 @@
-import type { NexWaveAuthProps } from "./types";
+import type { NexWaveAuthProps, NexWaveOAuthAuthProps } from "./types";
 
 interface FrappeEnvelope<T> {
   data?: T;
@@ -48,7 +48,7 @@ export async function exchangeFrappeCode(input: {
   });
 }
 
-export async function refreshFrappeToken(props: NexWaveAuthProps): Promise<NexWaveAuthProps> {
+export async function refreshFrappeToken(props: NexWaveOAuthAuthProps): Promise<NexWaveOAuthAuthProps> {
   if (!props.upstreamRefreshToken) throw new Error("The NexWave session cannot be refreshed. Sign in again.");
   const token = await requestToken(props.baseUrl, {
     grant_type: "refresh_token",
@@ -65,9 +65,17 @@ export async function refreshFrappeToken(props: NexWaveAuthProps): Promise<NexWa
 }
 
 export async function getLoggedUser(baseUrl: string, accessToken: string): Promise<string> {
+  return getLoggedUserWithAuthorization(baseUrl, `Bearer ${accessToken}`);
+}
+
+export async function getApiTokenUser(baseUrl: string, apiKey: string, apiSecret: string): Promise<string> {
+  return getLoggedUserWithAuthorization(baseUrl, `token ${apiKey}:${apiSecret}`);
+}
+
+async function getLoggedUserWithAuthorization(baseUrl: string, authorization: string): Promise<string> {
   const response = await frappeFetch<{ message: string }>(
     `${baseUrl}/api/method/frappe.auth.get_logged_user`,
-    accessToken,
+    authorization,
   );
   if (!response.message || typeof response.message !== "string") {
     throw new Error("NexWave did not return the signed-in user.");
@@ -87,13 +95,13 @@ export async function frappeList<T>(
   if (options.filters?.length) url.searchParams.set("filters", JSON.stringify(options.filters));
   if (options.orFilters?.length) url.searchParams.set("or_filters", JSON.stringify(options.orFilters));
   if (options.orderBy) url.searchParams.set("order_by", options.orderBy);
-  const response = await frappeFetch<FrappeEnvelope<T[]>>(url.toString(), props.upstreamAccessToken);
+  const response = await frappeFetch<FrappeEnvelope<T[]>>(url.toString(), upstreamAuthorization(props));
   return response.data ?? [];
 }
 
 export async function frappeGet<T>(props: NexWaveAuthProps, doctype: string, name: string): Promise<T> {
   const url = new URL(`/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, props.baseUrl);
-  const response = await frappeFetch<FrappeEnvelope<T>>(url.toString(), props.upstreamAccessToken);
+  const response = await frappeFetch<FrappeEnvelope<T>>(url.toString(), upstreamAuthorization(props));
   if (!response.data) throw new Error(`${doctype} ${name} was not found.`);
   return response.data;
 }
@@ -112,7 +120,7 @@ export async function frappeRunReport(
   });
   const response = await frappeFetch<FrappeEnvelope<FrappeReportResult>>(
     url.toString(),
-    props.upstreamAccessToken,
+    upstreamAuthorization(props),
     { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body },
   );
   if (!response.message) throw new Error(`${reportName} did not return report data.`);
@@ -120,6 +128,7 @@ export async function frappeRunReport(
 }
 
 export async function ensureFreshToken(props: NexWaveAuthProps): Promise<NexWaveAuthProps> {
+  if (props.authType === "api_token") return props;
   if (props.upstreamExpiresAt > Date.now() + 30_000) return props;
   return refreshFrappeToken(props);
 }
@@ -137,11 +146,18 @@ async function requestToken(baseUrl: string, values: Record<string, string>): Pr
   return payload as UpstreamTokenResponse;
 }
 
-async function frappeFetch<T>(url: string, accessToken: string, init: RequestInit = {}): Promise<T> {
+function upstreamAuthorization(props: NexWaveAuthProps): string {
+  if (props.authType === "api_token") {
+    return `token ${props.upstreamApiKey}:${props.upstreamApiSecret}`;
+  }
+  return `Bearer ${props.upstreamAccessToken}`;
+}
+
+async function frappeFetch<T>(url: string, authorization: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
     ...init,
     headers: {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: authorization,
       Accept: "application/json",
       ...(init.headers as Record<string, string> | undefined),
     },

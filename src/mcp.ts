@@ -331,10 +331,17 @@ export const mcpHandler = createMcpHandler(createNexWaveServer, {
 
 function getAuthProps(): NexWaveAuthProps {
   const props = getMcpAuthContext()?.props as NexWaveAuthProps | undefined;
-  if (!props?.siteId || !props.upstreamAccessToken) {
+  if (!props?.siteId || !hasUpstreamAuthentication(props)) {
     throw new Error("This MCP request does not have a valid NexWave connection.");
   }
   return props;
+}
+
+function hasUpstreamAuthentication(props: NexWaveAuthProps): boolean {
+  if (props.authType === "api_token") {
+    return Boolean(props.upstreamApiKey && props.upstreamApiSecret);
+  }
+  return Boolean(props.upstreamAccessToken);
 }
 
 async function currentProps(): Promise<NexWaveAuthProps> {

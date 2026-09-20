@@ -1,9 +1,32 @@
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
+interface CloudflareSubtleCrypto extends SubtleCrypto {
+  timingSafeEqual?: (left: ArrayBuffer | ArrayBufferView, right: ArrayBuffer | ArrayBufferView) => boolean;
+}
+
 export async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
   return bytesToHex(new Uint8Array(digest));
+}
+
+export async function secureEqual(left: string, right: string): Promise<boolean> {
+  const subtle: CloudflareSubtleCrypto = crypto.subtle;
+  const [leftHash, rightHash] = await Promise.all([
+    subtle.digest("SHA-256", encoder.encode(left)),
+    subtle.digest("SHA-256", encoder.encode(right)),
+  ]);
+  if (typeof subtle.timingSafeEqual === "function") {
+    return subtle.timingSafeEqual(leftHash, rightHash);
+  }
+
+  const leftBytes = new Uint8Array(leftHash);
+  const rightBytes = new Uint8Array(rightHash);
+  let difference = leftBytes.length ^ rightBytes.length;
+  for (let index = 0; index < leftBytes.length; index += 1) {
+    difference |= leftBytes[index] ^ rightBytes[index];
+  }
+  return difference === 0;
 }
 
 export async function pkceChallenge(verifier: string): Promise<string> {

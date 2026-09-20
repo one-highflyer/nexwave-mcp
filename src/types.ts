@@ -9,28 +9,47 @@ export interface Env {
   CONFIG_ENCRYPTION_KEY: string;
 }
 
+export type SiteAuthType = "oauth" | "api_token";
+
 export interface SiteRecord {
   id: string;
   display_name: string;
   base_url: string;
-  client_id: string;
-  encrypted_client_secret: string;
+  auth_type: SiteAuthType;
+  client_id: string | null;
+  encrypted_client_secret: string | null;
+  encrypted_api_key: string | null;
+  encrypted_api_secret: string | null;
+  api_user: string | null;
+  service_token_hash: string | null;
   enabled: number;
   created_at: string;
   updated_at: string;
 }
 
-export interface NexWaveAuthProps {
+interface NexWaveAuthPropsBase {
   siteId: string;
   siteName: string;
   baseUrl: string;
   user: string;
+}
+
+export interface NexWaveOAuthAuthProps extends NexWaveAuthPropsBase {
+  authType?: "oauth";
   upstreamAccessToken: string;
   upstreamRefreshToken?: string;
   upstreamExpiresAt: number;
   upstreamClientId: string;
   upstreamClientSecret: string;
 }
+
+export interface NexWaveApiTokenAuthProps extends NexWaveAuthPropsBase {
+  authType: "api_token";
+  upstreamApiKey: string;
+  upstreamApiSecret: string;
+}
+
+export type NexWaveAuthProps = NexWaveOAuthAuthProps | NexWaveApiTokenAuthProps;
 
 export interface PendingAuthorization {
   oauthRequest: AuthRequest;

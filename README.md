@@ -2,13 +2,14 @@
 
 NexWave MCP is a small, self-hosted gateway that connects AI clients such as ChatGPT, Claude, and Codex to a NexWave or ERPNext site.
 
-It uses standard MCP and OAuth 2 protocols. It does not need a custom Frappe app and does not use `frappe_assistant_core`.
+It uses standard MCP with OAuth 2 for interactive users and Frappe API tokens for non-interactive service clients. It does not need a custom Frappe app and does not use `frappe_assistant_core`.
 
 ## Live POC
 
 | Service | URL |
 | --- | --- |
 | MCP endpoint | `https://mcp.highflyertech.co.nz/mcp` |
+| Service MCP endpoint | `https://mcp.highflyertech.co.nz/service/mcp` |
 | Site setup | `https://mcp.highflyertech.co.nz/admin` |
 | Health check | `https://mcp.highflyertech.co.nz/health` |
 
@@ -21,28 +22,31 @@ flowchart LR
     ChatGPT["ChatGPT"]
     Claude["Claude"]
     Codex["Codex"]
+    Service["Non-interactive service client"]
     MCP["NexWave MCP Server<br/>Cloudflare Worker"]
     Site["NexWave / ERPNext Site<br/>Frappe REST API"]
-    D1[("Cloudflare D1<br/>Site registry and audit events")]
+    D1[("Cloudflare D1<br/>Site registry, encrypted credentials,<br/>service token hashes, and audit events")]
     KV[("Cloudflare KV<br/>OAuth state, grants, and tokens")]
     Admin["NexWave administrator"]
 
     ChatGPT -->|"Remote MCP over HTTPS<br/>OAuth 2"| MCP
     Claude -->|"Remote MCP over HTTPS<br/>OAuth 2"| MCP
     Codex -->|"Remote MCP over HTTPS<br/>OAuth 2"| MCP
+    Service -->|"Remote MCP over HTTPS<br/>Service token"| MCP
     MCP -->|"Frappe REST API<br/>User OAuth token"| Site
+    MCP -->|"Frappe REST API<br/>Service API token"| Site
     MCP --> D1
     MCP --> KV
-    Admin -->|"Registers a site OAuth client"| MCP
+    Admin -->|"Registers site credentials"| MCP
 ```
 
 The Worker is the protocol and security boundary between each AI client and each NexWave site.
 
 | Component | Responsibility |
 | --- | --- |
-| MCP client | Discovers the server, completes OAuth, and calls tools |
+| MCP client | Discovers the server, authenticates, and calls tools |
 | Cloudflare Worker | Handles MCP, OAuth, tool validation, and Frappe REST requests |
-| D1 | Stores the private site registry, encrypted client secrets, and sign-in audit events |
+| D1 | Stores the private site registry, encrypted OAuth or API-token credentials, service token hashes, and sign-in audit events |
 | KV | Stores short-lived OAuth state, grants, and MCP tokens |
 | NexWave site | Authenticates the user and applies normal Frappe permissions |
 
@@ -54,6 +58,8 @@ The Worker is the protocol and security boundary between each AI client and each
 4. The browser moves to the selected NexWave site for Frappe OAuth approval with PKCE S256.
 5. After approval, the Worker returns control to the MCP client and issues an MCP token with the `nexwave:read` scope.
 6. Each tool call uses the signed-in user's Frappe access token. Frappe applies that user's roles and document permissions.
+
+Non-interactive clients can use the separate `/service/mcp` route. When an administrator registers a fixed API-token site, the Worker verifies the Frappe credentials and returns a generated service token once. It stores only the service-token hash and encrypted Frappe credentials in D1. A service client sends the generated token in the `X-NexWave-Service-Token` header. This route exposes the same read-only tool catalogue as `/mcp`.
 
 ## Connect a client
 
@@ -72,6 +78,22 @@ codex mcp get nexwave
 ```
 
 The browser will ask for the NexWave site URL and then show that site's normal Frappe sign-in and access approval screens.
+
+### Connect a non-interactive service client
+
+Use the service endpoint when a client cannot complete an interactive OAuth flow:
+
+```text
+https://mcp.highflyertech.co.nz/service/mcp
+```
+
+Configure this request header:
+
+```text
+X-NexWave-Service-Token: <generated-service-token>
+```
+
+Add the site at `/admin`, select **Fixed API token**, and enter the API key and secret of a dedicated NexWave user. Copy the generated service token when the connection is saved. The same site URL can have one OAuth connection and one fixed-token connection. The gateway token is not a Frappe credential. The Worker uses its hash to select the registered site, decrypts the stored Frappe API token, and applies that service user's normal roles and permissions.
 
 ## Available tools
 
@@ -139,7 +161,7 @@ npm run dev
 
 Open `http://localhost:8787/admin`.
 
-Create an **OAuth Client** on the Frappe site with these settings:
+For an OAuth site, create an **OAuth Client** on the Frappe site with these settings:
 
 | Field | Value |
 | --- | --- |
@@ -151,7 +173,9 @@ Create an **OAuth Client** on the Frappe site with these settings:
 | Response Type | Code |
 | Skip Authorization | Off |
 
-Copy the generated client ID and secret into the local setup page. A local Frappe bench can use `http://localhost:8000` when the required site is the bench default.
+Copy the generated client ID and secret into the local setup page and select **OAuth 2**. A local Frappe bench can use `http://localhost:8000` when the required site is the bench default.
+
+For a non-interactive service connection, create an API key and secret for a dedicated NexWave user. In the setup page, select **Fixed API token**. The page shows the generated service token once after it verifies and saves the connection.
 
 ## Cloudflare deployment
 
@@ -183,11 +207,14 @@ GitHub Actions validates each push and pull request to `main`. It does not deplo
 
 ## Security model
 
-- Site OAuth client secrets are encrypted with AES-256-GCM before D1 storage.
+- Site OAuth client secrets and fixed API-token credentials are encrypted with AES-256-GCM before D1 storage.
 - The OAuth Provider library encrypts upstream tokens and refresh properties in KV.
 - OAuth approval state expires after ten minutes and is bound to the same browser with an HTTP-only cookie.
 - Frappe sign-in uses PKCE S256 and the confidential client secret.
 - The admin API requires a separate bearer token.
+- The service MCP route accepts a generated gateway token and maps its stored hash to one registered fixed-token site.
+- A generated service token is returned only once. D1 stores its hash, not the token value.
+- Fixed Frappe API credentials are encrypted in D1 and are never returned to the MCP client.
 - Production site URLs must use HTTPS. Plain HTTP is accepted only for local development hosts.
 - Tools cannot call arbitrary Frappe methods, reports, DocTypes, fields, or URLs.
 - The public consent page does not enumerate registered site names or URLs.

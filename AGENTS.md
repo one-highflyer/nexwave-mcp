@@ -1,6 +1,6 @@
 # NexWave MCP contributor guide
 
-This repository contains a public, self-hosted MCP gateway for NexWave and ERPNext. It runs on Cloudflare Workers and connects to each registered Frappe site through that site's standard OAuth 2 flow.
+This repository contains a public, self-hosted MCP gateway for NexWave and ERPNext. It runs on Cloudflare Workers and connects to each registered Frappe site through OAuth 2 or a fixed API token for non-interactive service clients.
 
 ## Project rules
 
@@ -16,11 +16,12 @@ This repository contains a public, self-hosted MCP gateway for NexWave and ERPNe
 
 ## Trust boundaries
 
-The MCP client authorises against this Worker. The Worker then authorises the user against the selected NexWave site. These are separate OAuth relationships.
+The MCP client authorises against this Worker. The Worker then authorises the user or service account against the selected NexWave site. OAuth client and upstream site authorization remain separate relationships.
 
 - The Cloudflare OAuth Provider manages MCP client grants and tokens in KV.
-- D1 stores the private site registry and audit events.
-- Site OAuth client secrets are encrypted before they are written to D1.
+- D1 stores the private site registry, service token hashes, and audit events.
+- Site OAuth client secrets and fixed API-token credentials are encrypted before they are written to D1.
+- Generated service tokens are shown once and stored only as SHA-256 hashes.
 - The registered site origin must exactly match the origin entered by the user.
 - Frappe access tokens must be used only with their registered site.
 

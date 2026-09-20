@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decryptSecret, encryptSecret, safeBaseUrl, siteOriginFromInput } from "../src/security";
+import { decryptSecret, encryptSecret, safeBaseUrl, secureEqual, siteOriginFromInput } from "../src/security";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
@@ -14,6 +14,13 @@ describe("secret encryption", () => {
 
   it("rejects a key with the wrong length", async () => {
     await expect(encryptSecret("secret", "c2hvcnQ")).rejects.toThrow("32-byte key");
+  });
+});
+
+describe("secret comparison", () => {
+  it("compares secret values without a direct string comparison", async () => {
+    await expect(secureEqual("same-secret", "same-secret")).resolves.toBe(true);
+    await expect(secureEqual("same-secret", "different-secret")).resolves.toBe(false);
   });
 });
 
