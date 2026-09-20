@@ -1,0 +1,30 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "nexwave-mcp",
+  "account_id": "d72a435d12cd499b2fab80065e8dc3bb",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-20",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "ef424dd2854042cea6c9f44b78e19225",
+      "preview_id": "62703d4b5bd4483ba2c231ee8f1b7452"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "NEXWAVE_MCP_DB",
+      "database_name": "nexwave-mcp",
+      "database_id": "e45ed0bd-48f7-40d7-bd7d-065c1b3953ba",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "triggers": {
+    "crons": ["0 3 * * *"]
+  }
+}
