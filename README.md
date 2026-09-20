@@ -14,8 +14,8 @@ It does not require a custom Frappe app. It does not use `frappe_assistant_core`
 
 ## Live POC
 
-- Setup page: `https://nexwave-mcp.hello-d72.workers.dev/admin`
-- MCP endpoint: `https://nexwave-mcp.hello-d72.workers.dev/mcp`
+- Setup page: `https://mcp.highflyertech.co.nz/admin`
+- MCP endpoint: `https://mcp.highflyertech.co.nz/mcp`
 - Connected test site: configured privately in the hosted setup page
 
 The setup page needs the `ADMIN_TOKEN` Worker secret. A local recovery copy is in the ignored `.prod.vars` file for this POC. Move it to the team password manager before other people operate the service.
@@ -25,7 +25,7 @@ The setup page needs the `ADMIN_TOKEN` Worker secret. A local recovery copy is i
 Add the hosted MCP server and complete the browser sign-in:
 
 ```bash
-codex mcp add nexwave --url https://nexwave-mcp.hello-d72.workers.dev/mcp
+codex mcp add nexwave --url https://mcp.highflyertech.co.nz/mcp
 codex mcp login nexwave
 ```
 
