@@ -52,13 +52,12 @@ describe("admin site authentication modes", () => {
     await expect(decryptSecret(String(values[7]), KEY)).resolves.toBe("api-secret");
   });
 
-  it("stores OAuth credentials without creating a service token", async () => {
+  it("keeps the existing OAuth request and response contract", async () => {
     const inserted: unknown[][] = [];
     const response = await addSite(
       {
         displayName: "Demo",
         baseUrl: "https://demo.example.com",
-        authType: "oauth",
         clientId: "oauth-client-id",
         clientSecret: "oauth-client-secret",
       },
@@ -66,8 +65,16 @@ describe("admin site authentication modes", () => {
     );
 
     expect(response.status).toBe(201);
-    const result = await response.json<{ serviceToken?: string }>();
-    expect(result.serviceToken).toBeUndefined();
+    const result = await response.json<Record<string, unknown>>();
+    expect(result).toMatchObject({
+      displayName: "Demo",
+      baseUrl: "https://demo.example.com",
+      authType: "oauth",
+      clientId: "oauth-client-id",
+      apiUser: null,
+      enabled: true,
+    });
+    expect(result).not.toHaveProperty("serviceToken");
     const values = inserted[0];
     expect(values[3]).toBe("oauth");
     expect(values[4]).toBe("oauth-client-id");

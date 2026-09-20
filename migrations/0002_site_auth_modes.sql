@@ -2,7 +2,7 @@ CREATE TABLE sites_v2 (
   id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
   base_url TEXT NOT NULL,
-  auth_type TEXT NOT NULL CHECK (auth_type IN ('oauth', 'api_token')),
+  auth_type TEXT NOT NULL DEFAULT 'oauth' CHECK (auth_type IN ('oauth', 'api_token')),
   client_id TEXT,
   encrypted_client_secret TEXT,
   encrypted_api_key TEXT,

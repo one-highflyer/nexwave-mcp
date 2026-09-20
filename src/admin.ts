@@ -101,6 +101,7 @@ adminApp.post("/api/admin/sites", requireAdmin, async (context) => {
     displayName,
     baseUrl,
     authType,
+    clientId: site.client_id,
     apiUser: site.api_user,
     serviceToken,
     enabled: true,
@@ -134,6 +135,7 @@ function requiredString(value: unknown, label: string, maxLength: number): strin
 }
 
 function requiredAuthType(value: unknown): SiteAuthType {
+  if (value === undefined) return "oauth";
   if (value === "oauth" || value === "api_token") return value;
   throw new Error("Authentication type must be OAuth or fixed API token.");
 }
