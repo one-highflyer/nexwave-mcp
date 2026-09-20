@@ -1,6 +1,7 @@
 import { createMcpHandler } from "agents/mcp/server";
 import { getSiteByServiceTokenHash } from "./db";
 import { createNexWaveServer } from "./mcp";
+import { normaliseMcpToolArguments } from "./mcp-request";
 import { decryptSecret, sha256 } from "./security";
 import type { Env, NexWaveApiTokenAuthProps } from "./types";
 
@@ -24,7 +25,7 @@ export async function handleServiceMcpRequest(
     legacy: "stateless",
     authContext: { props: { ...authentication.props } },
   });
-  return handler(withoutServiceToken(request), env, ctx);
+  return handler(await normaliseMcpToolArguments(withoutServiceToken(request)), env, ctx);
 }
 
 export async function authenticateServiceMcpRequest(

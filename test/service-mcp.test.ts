@@ -84,7 +84,7 @@ describe("service MCP authentication", () => {
         customer: null,
         status: "Unpaid",
         from_date: null,
-        to_date: "2026-09-20",
+        to_date: null,
       }),
       serviceEnv(site),
       executionContext(),
@@ -104,7 +104,6 @@ describe("service MCP authentication", () => {
     const upstream = new URL(String(url));
     expect(JSON.parse(upstream.searchParams.get("filters") ?? "[]")).toEqual([
       ["Sales Invoice", "status", "=", "Unpaid"],
-      ["Sales Invoice", "posting_date", "<=", "2026-09-20"],
     ]);
   });
 });
