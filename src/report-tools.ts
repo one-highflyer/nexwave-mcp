@@ -5,8 +5,8 @@ import type { NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
 const NAME = z.string().trim().min(1).max(140);
-const NAMES = z.array(NAME).max(20).optional();
-const REPORT_LIMIT = z.number().int().min(1).max(200).default(100);
+const NAMES = z.array(NAME).max(20).nullish();
+const REPORT_LIMIT = z.number().int().min(1).max(200).nullable().default(100);
 const PERIODICITY = z.enum(["Monthly", "Quarterly", "Half-Yearly", "Yearly"]);
 const STRUCTURAL_FIELDS = new Set([
   "indent",
@@ -36,8 +36,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         to_date: DATE,
         item_codes: NAMES,
         warehouses: NAMES,
-        item_group: NAME.optional(),
-        include_zero_stock_items: z.boolean().default(false),
+        item_group: NAME.nullish(),
+        include_zero_stock_items: z.boolean().nullable().default(false),
         limit: REPORT_LIMIT,
       },
     },
@@ -57,7 +57,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           ignore_closing_balance: 0,
           valuation_field_type: "Currency",
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -72,10 +72,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         to_date: DATE,
         item_codes: NAMES,
         warehouses: NAMES,
-        item_group: NAME.optional(),
-        batch_no: NAME.optional(),
-        voucher_no: NAME.optional(),
-        project: NAME.optional(),
+        item_group: NAME.nullish(),
+        batch_no: NAME.nullish(),
+        voucher_no: NAME.nullish(),
+        project: NAME.nullish(),
         limit: REPORT_LIMIT,
       },
     },
@@ -97,7 +97,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           valuation_field_type: "Currency",
           segregate_serial_batch_bundle: 0,
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -110,10 +110,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         company: NAME,
         from_date: DATE,
         to_date: DATE,
-        periodicity: PERIODICITY.default("Yearly"),
+        periodicity: PERIODICITY.nullable().default("Yearly"),
         cost_centres: NAMES,
         projects: NAMES,
-        presentation_currency: z.string().trim().min(3).max(20).optional(),
+        presentation_currency: z.string().trim().min(3).max(20).nullish(),
         limit: REPORT_LIMIT,
       },
     },
@@ -127,7 +127,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           filter_based_on: "Date Range",
           period_start_date: from_date,
           period_end_date: to_date,
-          periodicity,
+          periodicity: periodicity ?? "Yearly",
           cost_center: cost_centres,
           project: projects,
           presentation_currency,
@@ -136,7 +136,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_zero_values: 0,
           selected_view: "Report",
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -152,8 +152,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         to_date: DATE,
         cost_centres: NAMES,
         projects: NAMES,
-        finance_book: NAME.optional(),
-        presentation_currency: z.string().trim().min(3).max(20).optional(),
+        finance_book: NAME.nullish(),
+        presentation_currency: z.string().trim().min(3).max(20).nullish(),
         limit: REPORT_LIMIT,
       },
     },
@@ -178,7 +178,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_group_accounts: 1,
           show_zero_values: 0,
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -192,13 +192,13 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         from_date: DATE,
         to_date: DATE,
         accounts: NAMES,
-        party_type: z.enum(["Customer", "Supplier", "Employee"]).optional(),
+        party_type: z.enum(["Customer", "Supplier", "Employee"]).nullish(),
         parties: NAMES,
-        voucher_no: NAME.optional(),
+        voucher_no: NAME.nullish(),
         cost_centres: NAMES,
         projects: NAMES,
-        finance_book: NAME.optional(),
-        group_by: z.enum(["voucher", "voucher_consolidated", "account", "party"]).default("voucher_consolidated"),
+        finance_book: NAME.nullish(),
+        group_by: z.enum(["voucher", "voucher_consolidated", "account", "party"]).nullable().default("voucher_consolidated"),
         limit: REPORT_LIMIT,
       },
     },
@@ -209,7 +209,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         voucher_consolidated: "Categorize by Voucher (Consolidated)",
         account: "Categorize by Account",
         party: "Categorize by Party",
-      }[group_by];
+      }[group_by ?? "voucher_consolidated"];
       return runReport(
         getProps,
         "General Ledger",
@@ -229,7 +229,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_cancelled_entries: 0,
           show_remarks: 0,
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -243,9 +243,9 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         report_date: DATE,
         customers: NAMES,
         customer_groups: NAMES,
-        ageing_based_on: z.enum(["Posting Date", "Due Date"]).default("Due Date"),
-        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).default([30, 60, 90, 120]),
-        group_by_customer: z.boolean().default(false),
+        ageing_based_on: z.enum(["Posting Date", "Due Date"]).nullable().default("Due Date"),
+        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).nullable().default([30, 60, 90, 120]),
+        group_by_customer: z.boolean().nullable().default(false),
         cost_centres: NAMES,
         projects: NAMES,
         limit: REPORT_LIMIT,
@@ -253,7 +253,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
     async ({ company, report_date, customers, customer_groups, ageing_based_on, ageing_ranges, group_by_customer, cost_centres, projects, limit }) => {
       validateDateRange(report_date, report_date);
-      validateAgeingRanges(ageing_ranges);
+      const ranges = ageing_ranges ?? [30, 60, 90, 120];
+      validateAgeingRanges(ranges);
       return runReport(
         getProps,
         "Accounts Receivable",
@@ -263,16 +264,16 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           party_type: "Customer",
           party: customers,
           customer_group: customer_groups,
-          ageing_based_on,
+          ageing_based_on: ageing_based_on ?? "Due Date",
           age_as_on: "Report Date",
-          range: ageing_ranges.join(", "),
+          range: ranges.join(", "),
           group_by_party: group_by_customer ? 1 : 0,
           cost_center: cost_centres,
           project: projects,
           show_future_payments: 0,
           show_remarks: 0,
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -286,9 +287,9 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         report_date: DATE,
         suppliers: NAMES,
         supplier_groups: NAMES,
-        ageing_based_on: z.enum(["Posting Date", "Due Date", "Supplier Invoice Date"]).default("Due Date"),
-        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).default([30, 60, 90, 120]),
-        group_by_supplier: z.boolean().default(false),
+        ageing_based_on: z.enum(["Posting Date", "Due Date", "Supplier Invoice Date"]).nullable().default("Due Date"),
+        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).nullable().default([30, 60, 90, 120]),
+        group_by_supplier: z.boolean().nullable().default(false),
         cost_centres: NAMES,
         projects: NAMES,
         limit: REPORT_LIMIT,
@@ -296,7 +297,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
     async ({ company, report_date, suppliers, supplier_groups, ageing_based_on, ageing_ranges, group_by_supplier, cost_centres, projects, limit }) => {
       validateDateRange(report_date, report_date);
-      validateAgeingRanges(ageing_ranges);
+      const ranges = ageing_ranges ?? [30, 60, 90, 120];
+      validateAgeingRanges(ranges);
       return runReport(
         getProps,
         "Accounts Payable",
@@ -306,16 +308,16 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           party_type: "Supplier",
           party: suppliers,
           supplier_group: supplier_groups,
-          ageing_based_on,
+          ageing_based_on: ageing_based_on ?? "Due Date",
           age_as_on: "Report Date",
-          range: ageing_ranges.join(", "),
+          range: ranges.join(", "),
           group_by_party: group_by_supplier ? 1 : 0,
           cost_center: cost_centres,
           project: projects,
           show_future_payments: 0,
           show_remarks: 0,
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -328,7 +330,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         company: NAME,
         account: NAME,
         report_date: DATE,
-        include_pos_transactions: z.boolean().default(false),
+        include_pos_transactions: z.boolean().nullable().default(false),
         limit: REPORT_LIMIT,
       },
     },
@@ -343,7 +345,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           report_date,
           include_pos_transactions: include_pos_transactions ? 1 : 0,
         },
-        limit,
+        limit ?? 100,
       );
     },
   );
@@ -421,7 +423,7 @@ function validateAgeingRanges(values: number[]): void {
 
 function compactFilters(filters: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
-    Object.entries(filters).filter(([, value]) => value !== undefined && value !== "" && (!Array.isArray(value) || value.length > 0)),
+    Object.entries(filters).filter(([, value]) => value != null && value !== "" && (!Array.isArray(value) || value.length > 0)),
   );
 }
 
