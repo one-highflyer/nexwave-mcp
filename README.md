@@ -20,6 +20,23 @@ It does not require a custom Frappe app. It does not use `frappe_assistant_core`
 
 The setup page needs the `ADMIN_TOKEN` Worker secret. A local recovery copy is in the ignored `.prod.vars` file for this POC. Move it to the team password manager before other people operate the service.
 
+## Connect from Codex
+
+Add the hosted MCP server and complete the browser sign-in:
+
+```bash
+codex mcp add nexwave --url https://nexwave-mcp.hello-d72.workers.dev/mcp
+codex mcp login nexwave
+```
+
+Check the saved connection:
+
+```bash
+codex mcp get nexwave
+```
+
+Codex CLI and the Codex desktop app use the same MCP configuration.
+
 ## POC scope
 
 The current tools are read-only:
