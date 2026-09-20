@@ -124,7 +124,7 @@ Report names and filters are allowlisted. Detailed reports have date-range limit
 
 Requirements:
 
-- Node.js 20 or newer
+- Node.js 22 or newer
 - A Cloudflare account for deployment
 - A Frappe v15, ERPNext, or NexWave site
 

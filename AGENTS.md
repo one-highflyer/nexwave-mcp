@@ -42,7 +42,7 @@ Do not replace these checks with client-supplied URLs, arbitrary Frappe methods,
 
 ## Development workflow
 
-Use Node.js 20 or newer and install dependencies with `npm ci` when a lockfile is present.
+Use Node.js 22 or newer and install dependencies with `npm ci` when a lockfile is present.
 
 Run these checks before each pull request:
 
