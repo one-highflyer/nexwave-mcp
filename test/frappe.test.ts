@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureFreshToken, frappeList, frappeRunReport, getLoggedUser } from "../src/frappe";
-import type { NexWaveAuthProps } from "../src/types";
+import { ensureFreshToken, frappeList, frappeRunReport, getApiTokenUser, getLoggedUser } from "../src/frappe";
+import type { NexWaveApiTokenAuthProps, NexWaveOAuthAuthProps } from "../src/types";
 
-const PROPS: NexWaveAuthProps = {
+const PROPS: NexWaveOAuthAuthProps = {
+  authType: "oauth",
   siteId: "site_test",
   siteName: "Demo",
   baseUrl: "https://demo.example.com",
@@ -12,6 +13,16 @@ const PROPS: NexWaveAuthProps = {
   upstreamExpiresAt: Date.now() + 3_600_000,
   upstreamClientId: "client-id",
   upstreamClientSecret: "client-secret",
+};
+
+const API_TOKEN_PROPS: NexWaveApiTokenAuthProps = {
+  authType: "api_token",
+  siteId: "site_test",
+  siteName: "Demo",
+  baseUrl: "https://demo.example.com",
+  user: "service@example.com",
+  upstreamApiKey: "api-key",
+  upstreamApiSecret: "api-secret",
 };
 
 afterEach(() => vi.unstubAllGlobals());
@@ -43,6 +54,35 @@ describe("Frappe REST client", () => {
     );
 
     await expect(getLoggedUser(PROPS.baseUrl, PROPS.upstreamAccessToken)).resolves.toBe("user@example.com");
+  });
+
+  it("reads the Frappe user for a fixed API token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: "service@example.com" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getApiTokenUser(PROPS.baseUrl, "api-key", "api-secret")).resolves.toBe(
+      "service@example.com",
+    );
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: "token api-key:api-secret",
+    });
+  });
+
+  it("uses Frappe API token authentication for service connections", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ name: "Example" }] }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await frappeList(API_TOKEN_PROPS, "Customer", ["name"]);
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: "token api-key:api-secret",
+    });
   });
 
   it("runs an allowlisted query report with the signed-in user token", async () => {
@@ -83,11 +123,20 @@ describe("Frappe REST client", () => {
 
     const result = await ensureFreshToken({ ...PROPS, upstreamExpiresAt: Date.now() - 1 });
 
+    if (result.authType === "api_token") throw new Error("Expected OAuth authentication.");
     expect(result.upstreamAccessToken).toBe("new-token");
     expect(result.upstreamRefreshToken).toBe("new-refresh");
     const [, init] = fetchMock.mock.calls[0];
     const body = init.body as URLSearchParams;
     expect(body.get("grant_type")).toBe("refresh_token");
     expect(body.get("client_secret")).toBe("client-secret");
+  });
+
+  it("does not refresh a Frappe API token", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(ensureFreshToken(API_TOKEN_PROPS)).resolves.toBe(API_TOKEN_PROPS);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -2,6 +2,7 @@ import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
 import { authApp, refreshUpstreamOnTokenExchange } from "./auth";
 import { adminApp } from "./admin";
 import { mcpHandler } from "./mcp";
+import { handleServiceMcpRequest, SERVICE_MCP_ROUTE } from "./service-mcp";
 import type { Env } from "./types";
 
 const apiHandler = {
@@ -44,6 +45,9 @@ const provider = new OAuthProvider<Env>({
 
 export default {
   fetch(request, env, ctx) {
+    if (new URL(request.url).pathname === SERVICE_MCP_ROUTE) {
+      return handleServiceMcpRequest(request, env, ctx);
+    }
     return provider.fetch(request, env, ctx);
   },
   scheduled(_event, env, ctx) {

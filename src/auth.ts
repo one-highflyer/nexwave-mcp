@@ -20,7 +20,13 @@ import {
   siteOriginFromInput,
   sha256,
 } from "./security";
-import type { Env, NexWaveAuthProps, PendingAuthorization, PendingFrappeAuthorization } from "./types";
+import type {
+  Env,
+  NexWaveAuthProps,
+  NexWaveOAuthAuthProps,
+  PendingAuthorization,
+  PendingFrappeAuthorization,
+} from "./types";
 
 const AUTH_TTL_SECONDS = 600;
 const LOCAL_SCOPE = "nexwave:read";
@@ -81,7 +87,7 @@ authApp.post("/authorize", async (context) => {
   const submittedSiteUrl = form.get("site_url");
   const siteUrl = typeof submittedSiteUrl === "string" ? submittedSiteUrl : "";
   const site = await findRequestedSite(context.env, siteUrl);
-  if (!site || !site.enabled) {
+  if (!site || !site.enabled || site.auth_type !== "oauth" || !site.client_id) {
     const client = await context.env.OAUTH_PROVIDER.lookupClient(stored.oauthRequest.clientId);
     if (!client) {
       return htmlResponse(renderErrorPage("Unknown MCP client", "This client is no longer registered."), 400);
@@ -156,7 +162,13 @@ authApp.get("/oauth/frappe/callback", async (context) => {
   }
 
   const site = await getSite(context.env, stored.siteId);
-  if (!site || !site.enabled) {
+  if (
+    !site
+    || !site.enabled
+    || site.auth_type !== "oauth"
+    || !site.client_id
+    || !site.encrypted_client_secret
+  ) {
     return oauthErrorResponse(
       stored.oauthRequest,
       "temporarily_unavailable",
@@ -177,6 +189,7 @@ authApp.get("/oauth/frappe/callback", async (context) => {
     const user = await getLoggedUser(site.base_url, token.access_token);
     const userId = `nw_${await sha256(`${site.id}|${user}`)}`;
     const props: NexWaveAuthProps = {
+      authType: "oauth",
       siteId: site.id,
       siteName: site.display_name,
       baseUrl: site.base_url,
@@ -214,7 +227,7 @@ export async function refreshUpstreamOnTokenExchange(
   options: TokenExchangeCallbackOptions,
 ): Promise<TokenExchangeCallbackResult | void> {
   const props = options.props as NexWaveAuthProps | undefined;
-  if (!props?.upstreamAccessToken) return;
+  if (!props || props.authType === "api_token" || !props.upstreamAccessToken) return;
 
   if (options.grantType === GrantType.REFRESH_TOKEN) {
     const refreshed = await refreshFrappeToken(props);
@@ -227,14 +240,14 @@ export async function refreshUpstreamOnTokenExchange(
   return { accessTokenTTL: upstreamTtl(props) };
 }
 
-function upstreamTtl(props: NexWaveAuthProps): number {
+function upstreamTtl(props: NexWaveOAuthAuthProps): number {
   return Math.max(60, Math.min(3600, Math.floor((props.upstreamExpiresAt - Date.now()) / 1000)));
 }
 
 async function findRequestedSite(env: Env, value: FormDataEntryValue | null) {
   if (typeof value !== "string" || !value.trim()) return null;
   try {
-    return await getSiteByBaseUrl(env, siteOriginFromInput(value));
+    return await getSiteByBaseUrl(env, siteOriginFromInput(value), "oauth");
   } catch {
     return null;
   }
