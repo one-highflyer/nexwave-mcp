@@ -4,6 +4,11 @@
   "account_id": "d72a435d12cd499b2fab80065e8dc3bb",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-20",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": {
     "enabled": true,

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureFreshToken, frappeList, getLoggedUser } from "../src/frappe";
+import { ensureFreshToken, frappeList, frappeRunReport, getLoggedUser } from "../src/frappe";
 import type { NexWaveAuthProps } from "../src/types";
 
 const PROPS: NexWaveAuthProps = {
@@ -43,6 +43,33 @@ describe("Frappe REST client", () => {
     );
 
     await expect(getLoggedUser(PROPS.baseUrl, PROPS.upstreamAccessToken)).resolves.toBe("user@example.com");
+  });
+
+  it("runs an allowlisted query report with the signed-in user token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ message: { columns: [], result: [{ item_code: "ITEM-001" }] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await frappeRunReport(PROPS, "Stock Balance", {
+      company: "Example Company",
+      from_date: "2026-01-01",
+      to_date: "2026-01-31",
+    });
+
+    expect(result.result).toEqual([{ item_code: "ITEM-001" }]);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("https://demo.example.com/api/method/frappe.desk.query_report.run");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ Authorization: "Bearer access-token" });
+    const body = init.body as URLSearchParams;
+    expect(body.get("report_name")).toBe("Stock Balance");
+    expect(JSON.parse(body.get("filters") ?? "{}")).toMatchObject({ company: "Example Company" });
+    expect(body.get("ignore_prepared_report")).toBe("1");
+    expect(body.get("are_default_filters")).toBe("0");
   });
 
   it("refreshes an expired upstream token", async () => {

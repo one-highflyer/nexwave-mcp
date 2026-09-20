@@ -12,6 +12,11 @@ const apiHandler = {
 
 const defaultHandler: ExportedHandler<Env> = {
   async fetch(request, env, ctx) {
+    const path = new URL(request.url).pathname;
+    if (path === "/favicon.ico" || path === "/brand/nexwave-logo.png") {
+      return env.ASSETS.fetch(request);
+    }
+
     const adminResponse = await adminApp.fetch(request, env, ctx);
     if (adminResponse.status !== 404) return adminResponse;
     return authApp.fetch(request, env, ctx);

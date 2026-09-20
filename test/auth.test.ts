@@ -30,6 +30,8 @@ describe("OAuth consent privacy", () => {
     expect(html).toContain("Connecting to NexWave…");
     expect(html).toContain("Your MCP client will show the final success or failure result");
     expect(html).toContain('nonce="script-nonce"');
+    expect(html).toContain('href="/favicon.ico"');
+    expect(html).toContain('src="/brand/nexwave-logo.png"');
   });
 
   it("keeps the submitted URL and shows a safe retry error", () => {

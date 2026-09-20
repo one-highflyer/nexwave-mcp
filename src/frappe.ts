@@ -7,6 +7,22 @@ interface FrappeEnvelope<T> {
   exception?: string;
 }
 
+export interface FrappeReportColumn {
+  fieldname?: string;
+  label?: string;
+  fieldtype?: string;
+  options?: string;
+  width?: number;
+  [key: string]: unknown;
+}
+
+export interface FrappeReportResult {
+  result?: Array<Record<string, unknown>>;
+  columns?: FrappeReportColumn[];
+  report_summary?: Array<Record<string, unknown>>;
+  execution_time?: number;
+}
+
 export interface UpstreamTokenResponse {
   access_token: string;
   refresh_token?: string;
@@ -63,12 +79,13 @@ export async function frappeList<T>(
   props: NexWaveAuthProps,
   doctype: string,
   fields: string[],
-  options: { limit?: number; filters?: unknown[]; orderBy?: string } = {},
+  options: { limit?: number; filters?: unknown[]; orFilters?: unknown[]; orderBy?: string } = {},
 ): Promise<T[]> {
   const url = new URL(`/api/resource/${encodeURIComponent(doctype)}`, props.baseUrl);
   url.searchParams.set("fields", JSON.stringify(fields));
   url.searchParams.set("limit_page_length", String(Math.min(Math.max(options.limit ?? 20, 1), 50)));
   if (options.filters?.length) url.searchParams.set("filters", JSON.stringify(options.filters));
+  if (options.orFilters?.length) url.searchParams.set("or_filters", JSON.stringify(options.orFilters));
   if (options.orderBy) url.searchParams.set("order_by", options.orderBy);
   const response = await frappeFetch<FrappeEnvelope<T[]>>(url.toString(), props.upstreamAccessToken);
   return response.data ?? [];
@@ -79,6 +96,27 @@ export async function frappeGet<T>(props: NexWaveAuthProps, doctype: string, nam
   const response = await frappeFetch<FrappeEnvelope<T>>(url.toString(), props.upstreamAccessToken);
   if (!response.data) throw new Error(`${doctype} ${name} was not found.`);
   return response.data;
+}
+
+export async function frappeRunReport(
+  props: NexWaveAuthProps,
+  reportName: string,
+  filters: Record<string, unknown>,
+): Promise<FrappeReportResult> {
+  const url = new URL("/api/method/frappe.desk.query_report.run", props.baseUrl);
+  const body = new URLSearchParams({
+    report_name: reportName,
+    filters: JSON.stringify(filters),
+    ignore_prepared_report: "1",
+    are_default_filters: "0",
+  });
+  const response = await frappeFetch<FrappeEnvelope<FrappeReportResult>>(
+    url.toString(),
+    props.upstreamAccessToken,
+    { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body },
+  );
+  if (!response.message) throw new Error(`${reportName} did not return report data.`);
+  return response.message;
 }
 
 export async function ensureFreshToken(props: NexWaveAuthProps): Promise<NexWaveAuthProps> {
@@ -99,12 +137,23 @@ async function requestToken(baseUrl: string, values: Record<string, string>): Pr
   return payload as UpstreamTokenResponse;
 }
 
-async function frappeFetch<T>(url: string, accessToken: string): Promise<T> {
+async function frappeFetch<T>(url: string, accessToken: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    ...init,
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+      ...(init.headers as Record<string, string> | undefined),
+    },
   });
   const payload = (await response.json().catch(() => ({}))) as T & FrappeEnvelope<unknown>;
   if (!response.ok) {
+    if (response.status === 403) {
+      throw new Error("The signed-in NexWave user does not have permission for this request.");
+    }
+    if (response.status === 404) {
+      throw new Error("The requested NexWave resource was not found.");
+    }
     const type = payload.exc_type ? ` (${payload.exc_type})` : "";
     throw new Error(`NexWave returned HTTP ${response.status}${type}.`);
   }

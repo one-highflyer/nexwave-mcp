@@ -284,7 +284,7 @@ function htmlResponse(body: string, status = 200, scriptNonce?: string): Respons
     status,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https: http://localhost:* http://*.localhost:*; base-uri 'none'; frame-ancestors 'none'${scriptPolicy}`,
+      "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'self' https: http://localhost:* http://*.localhost:*; base-uri 'none'; frame-ancestors 'none'${scriptPolicy}`,
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     },

@@ -39,14 +39,34 @@ Codex CLI and the Codex desktop app use the same MCP configuration.
 
 ## POC scope
 
-The current tools are read-only:
+The tools are read-only and grouped into business records, report filters, and standard ERPNext reports:
 
 - `get_current_user`
 - `list_companies`
 - `list_customers`
 - `list_items`
+- `list_suppliers`
+- `list_warehouses`
+- `list_accounts`
+- `list_cost_centres`
+- `list_projects`
+- `list_fiscal_years`
 - `list_sales_orders`
+- `list_sales_invoices`
+- `list_purchase_invoices`
+- `list_payments`
+- `list_bank_transactions`
 - `get_document` for an allowlist of common sales and purchase records
+- `get_stock_balance`
+- `get_stock_ledger`
+- `get_profit_and_loss`
+- `get_trial_balance`
+- `get_general_ledger`
+- `get_accounts_receivable`
+- `get_accounts_payable`
+- `get_bank_reconciliation_statement`
+
+Report names and filters are allowlisted. Detailed report date ranges and returned rows are bounded to keep MCP responses manageable.
 
 Frappe applies the signed-in user's normal permissions to every REST request.
 

@@ -1,6 +1,7 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 
 export interface Env {
+  ASSETS: Fetcher;
   NEXWAVE_MCP_DB: D1Database;
   OAUTH_KV: KVNamespace;
   OAUTH_PROVIDER: OAuthHelpers;

@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
+import { BRAND_HEAD, BRAND_MARK } from "./brand";
 import { createSite, deleteSite, listSites } from "./db";
 import { encryptSecret, randomToken, safeBaseUrl } from "./security";
 import type { Env } from "./types";
@@ -76,7 +77,7 @@ function htmlResponse(body: string): Response {
   return new Response(body, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
-      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       "Referrer-Policy": "no-referrer",
       "X-Content-Type-Options": "nosniff",
     },
@@ -89,33 +90,46 @@ const ADMIN_HTML = `<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NexWave MCP setup</title>
+  ${BRAND_HEAD}
   <style>
-    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #172034; background: #f3f6fb; }
-    body { margin: 0; }
-    main { width: min(900px, calc(100% - 32px)); margin: 48px auto; }
-    h1 { margin: 0 0 8px; font-size: clamp(28px, 5vw, 42px); letter-spacing: -0.04em; }
-    .lead { color: #58647a; margin: 0 0 28px; }
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #111739; background: #f8f8fc; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 12% 0%, rgba(0, 222, 234, .12), transparent 32%), radial-gradient(circle at 88% 2%, rgba(229, 23, 216, .1), transparent 30%), #f8f8fc; }
+    main { width: min(960px, calc(100% - 32px)); margin: 42px auto 64px; }
+    .brand-lockup { display: flex; width: fit-content; align-items: center; gap: 11px; margin-bottom: 34px; }
+    .brand-logo { width: 48px; height: 48px; }
+    .brand-name strong, .brand-name span { display: block; }
+    .brand-name strong { color: #111739; font-size: 19px; letter-spacing: -.02em; }
+    .brand-name span { margin-top: 2px; color: #686d8a; font-size: 11px; font-weight: 750; letter-spacing: .13em; text-transform: uppercase; }
+    .eyebrow { display: inline-block; margin-bottom: 9px; color: #6536e8; font-size: 12px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+    h1 { margin: 0 0 9px; font-size: clamp(30px, 5vw, 44px); letter-spacing: -.045em; line-height: 1.05; }
+    .lead { color: #5e6380; margin: 0 0 30px; line-height: 1.55; }
     .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 20px; }
-    .card { background: white; border: 1px solid #dce3ef; border-radius: 16px; padding: 22px; box-shadow: 0 10px 30px rgba(28, 45, 78, .06); }
-    h2 { margin-top: 0; font-size: 18px; }
+    .card { position: relative; overflow: hidden; background: rgba(255, 255, 255, .94); border: 1px solid #e4e2ef; border-radius: 18px; padding: 24px; box-shadow: 0 16px 44px rgba(25, 19, 71, .07); }
+    .card::before { position: absolute; inset: 0 0 auto; height: 3px; background: linear-gradient(90deg, #00dfea, #6338e7 55%, #e517d8); content: ""; }
+    h2 { margin: 0 0 6px; font-size: 19px; letter-spacing: -.02em; }
     label { display: block; font-size: 13px; font-weight: 700; margin: 14px 0 6px; }
-    input { box-sizing: border-box; width: 100%; padding: 11px 12px; border: 1px solid #bdc8d9; border-radius: 9px; font: inherit; }
-    input:focus { outline: 3px solid #bde7de; border-color: #087a65; }
-    button { margin-top: 16px; border: 0; border-radius: 9px; padding: 11px 16px; background: #087a65; color: white; font-weight: 750; cursor: pointer; }
-    button.secondary { margin: 0; padding: 7px 10px; background: #eef2f7; color: #4d596e; }
-    .site { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid #e8edf4; }
+    input { box-sizing: border-box; width: 100%; padding: 11px 12px; border: 1px solid #c8c8d9; border-radius: 10px; background: #fff; color: #111739; font: inherit; transition: border-color .15s, box-shadow .15s; }
+    input:focus { outline: 0; border-color: #6536e8; box-shadow: 0 0 0 3px rgba(101, 54, 232, .14); }
+    button { margin-top: 16px; border: 0; border-radius: 10px; padding: 11px 16px; background: linear-gradient(115deg, #513bd7, #a923d3); color: white; font-weight: 750; cursor: pointer; box-shadow: 0 7px 18px rgba(92, 48, 207, .2); }
+    button:hover { filter: brightness(.97); }
+    button:focus-visible { outline: 3px solid rgba(0, 213, 229, .45); outline-offset: 2px; }
+    button.secondary { margin: 0; padding: 7px 10px; background: #f0eff8; color: #4c4768; box-shadow: none; }
+    .site { display: flex; align-items: start; justify-content: space-between; gap: 12px; padding: 13px 0; border-bottom: 1px solid #eceaf4; }
     .site:last-child { border-bottom: 0; }
     .site strong, .site span { display: block; overflow-wrap: anywhere; }
-    .site span { color: #69758a; font-size: 13px; margin-top: 3px; }
-    .status { min-height: 20px; color: #9b321f; font-size: 14px; margin-top: 12px; }
-    .hint { color: #69758a; font-size: 13px; line-height: 1.5; }
-    code { background: #eef2f7; padding: 2px 5px; border-radius: 5px; }
-    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } main { margin-top: 28px; } }
+    .site span { color: #6a6e87; font-size: 13px; margin-top: 3px; }
+    .status { min-height: 20px; color: #5d3474; font-size: 14px; margin-top: 12px; }
+    .hint { color: #6a6e87; font-size: 13px; line-height: 1.5; }
+    code { background: #f0eff8; padding: 2px 5px; border-radius: 5px; color: #493f85; }
+    @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } main { margin-top: 24px; } .brand-lockup { margin-bottom: 28px; } }
+    @media (prefers-reduced-motion: reduce) { input { transition: none; } }
   </style>
 </head>
 <body>
 <main>
-  <h1>NexWave MCP</h1>
+  ${BRAND_MARK}
+  <span class="eyebrow">Secure connections</span>
+  <h1>MCP setup</h1>
   <p class="lead">Connect NexWave sites to Claude, ChatGPT, and other MCP clients.</p>
   <div class="grid">
     <section class="card">
