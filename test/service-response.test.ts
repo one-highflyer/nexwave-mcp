@@ -93,7 +93,7 @@ it("cancels and unlocks a stalled stream at the deadline", async () => {
   const stream = new ReadableStream<Uint8Array>({ cancel: cancelled });
   const result = withServiceToolJsonResponse(request(), async () => sse(stream));
   const assertion = expect(result).rejects.toThrow("Incomplete");
-  await vi.advanceTimersByTimeAsync(39_999);
+  await vi.advanceTimersByTimeAsync(59_999);
   expect(cancelled).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
   await assertion;

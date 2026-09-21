@@ -63,7 +63,7 @@ Non-interactive clients can use the separate `/service/mcp` route. When an admin
 
 Legacy JSON-RPC service tool calls receive finite `application/json` replies. Standard MCP tool failures retain `isError: true` by default. Clients that discard these errors can opt in with `X-MCP-Error-Format: result`. In that mode only, tool failures are delivered as normal MCP results containing `status: "error"`, `ok: false`, and a safe `error` object with `code`, `message`, and `retryable`. The client must check this envelope before using any data. Authentication failures and protocol errors keep their normal semantics. The OAuth `/mcp` route does not use this option.
 
-Each MCP data tool has a shared 30-second upstream request budget, including any lookups before its report. The service response handler allows 40 seconds to deliver the result or a safe error. Configure Retell's MCP `timeout_ms` as `60000` so it does not stop waiting before the server can return that error. OAuth sign-in and token-exchange timeouts are unchanged.
+Each MCP data tool has a shared 50-second upstream request budget, including any lookups and bounded retries of retryable reads. The service response handler allows 60 seconds to deliver the result or a safe error. Configure Retell's MCP `timeout_ms` as `90000` so it does not stop waiting before the server can return that error. OAuth sign-in and token-exchange timeouts are unchanged.
 
 ## Connect a client
 
@@ -165,7 +165,7 @@ Use `unpaid_only: true` for submitted positive invoice balances, including partl
 
 Date-range reports accept either the existing explicit `from_date`/`to_date` pair or `period` plus `as_of_date` (the user's current local calendar date). Presets are `current_fiscal_year`, `last_month`, and `last_90_days`. Fiscal years are resolved by NexWave for the specified company. Do not mix presets with explicit dates. Ledger and sales-summary ranges remain bounded to 366 days.
 
-Tool execution shares an eight-second upstream budget for service-token clients and a thirty-second budget for OAuth clients. Responses are bounded to 8 MiB. Upstream timeouts, invalid JSON, permission failures and oversized results return safe MCP errors; none mean that no records exist. There is no automatic transport retry. Authentication routes, stored credentials and null-argument normalization are unchanged. No database migration is needed.
+Tool execution shares a 50-second upstream budget for service-token and OAuth clients. Responses are bounded to 8 MiB. Upstream timeouts, invalid JSON, permission failures and oversized results return safe MCP errors; none mean that no records exist. Read-only upstream requests get at most one retry inside the same 50-second budget when the failure is retryable. Authentication routes, stored credentials and null-argument normalization are unchanged. No database migration is needed.
 
 The stock-risk report covers existing item/warehouse stock rows only. It does not implement missing-Bin replenishment, warehouse-group reorder rules, demand forecasts or lead-time forecasts. A zero returned risk count is not evidence that all stock is safe.
 
