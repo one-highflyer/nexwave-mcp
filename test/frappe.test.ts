@@ -25,9 +25,43 @@ const API_TOKEN_PROPS: NexWaveApiTokenAuthProps = {
   upstreamApiSecret: "api-secret",
 };
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Frappe REST client", () => {
+  it.each(["<html>private failure</html>", "null", "{}", "{\"data\":null}"])("does not treat invalid list data as no records: %s", async (body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+    await expect(frappeList(PROPS, "Customer", ["name"])).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
+  it("aborts a stalled request and preserves a structured timeout error", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    })));
+    const result = frappeList({ ...API_TOKEN_PROPS, requestDeadline: Date.now() + 8000 }, "Customer", ["name"]);
+    const check = expect(result).rejects.toThrow("UPSTREAM_TIMEOUT");
+    await vi.advanceTimersByTimeAsync(8000);
+    await check;
+  });
+
+  it("does not start a second upstream request after the tool deadline", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(frappeList({ ...API_TOKEN_PROPS, requestDeadline: Date.now() - 1 }, "Customer", ["name"])).rejects.toThrow("UPSTREAM_TIMEOUT");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns a safe error for an HTML failure without exposing its body", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("private upstream body", { status: 502 })));
+    const result = frappeList(PROPS, "Customer", ["name"]);
+    await expect(result).rejects.toThrow("UPSTREAM_UNAVAILABLE");
+    await expect(result).rejects.not.toThrow("private upstream body");
+  });
+
+  it("rejects unfinished reports instead of reporting zero", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: { prepared_report: true } })));
+    await expect(frappeRunReport(PROPS, "Accounts Payable", {})).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
   it("uses the user bearer token and bounded list parameters", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ data: [{ name: "Example" }] }), {

@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { frappeRunReport, type FrappeReportResult } from "./frappe";
+import { frappeFiscalYear, frappeRunReport, type FrappeReportResult } from "./frappe";
+import { PERIOD_SCHEMA, resolveReportPeriod } from "./report-period";
+import { ToolError } from "./tool-result";
 import type { NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
@@ -33,8 +35,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Stock Balance report for a company and date range.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         item_codes: NAMES,
         warehouses: NAMES,
         item_group: NAME.optional(),
@@ -42,10 +43,12 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, item_codes, warehouses, item_group, include_zero_stock_items, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, include_zero_stock_items, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date);
       return runReport(
-        getProps,
+        async () => props,
         "Stock Balance",
         {
           company,
@@ -69,8 +72,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Stock Ledger report. Detailed report ranges are limited to 366 days.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         item_codes: NAMES,
         warehouses: NAMES,
         item_group: NAME.optional(),
@@ -80,10 +82,12 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, item_codes, warehouses, item_group, batch_no, voucher_no, project, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, batch_no, voucher_no, project, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
       return runReport(
-        getProps,
+        async () => props,
         "Stock Ledger",
         {
           company,
@@ -109,8 +113,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Profit and Loss Statement for a date range.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         periodicity: PERIODICITY.default("Yearly"),
         cost_centres: NAMES,
         projects: NAMES,
@@ -118,10 +121,12 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, periodicity, cost_centres, projects, presentation_currency, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, periodicity, cost_centres, projects, presentation_currency, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date);
       return runReport(
-        getProps,
+        async () => props,
         "Profit and Loss Statement",
         {
           company,
@@ -148,9 +153,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Trial Balance for one fiscal year and date range.",
       inputSchema: {
         company: NAME,
-        fiscal_year: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        fiscal_year: NAME.optional(),
+        ...PERIOD_SCHEMA,
         cost_centres: NAMES,
         projects: NAMES,
         finance_book: NAME.optional(),
@@ -158,10 +162,18 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, fiscal_year, from_date, to_date, cost_centres, projects, finance_book, presentation_currency, limit }) => {
+    async ({ company, fiscal_year: fiscalYear, from_date: from, to_date: to, period, as_of_date, cost_centres, projects, finance_book, presentation_currency, limit }) => {
+      const props = await getProps();
+      const dates = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
+      const { from_date, to_date } = dates;
       validateDateRange(from_date, to_date);
+      const fiscal = await frappeFiscalYear(props, company, to_date, fiscalYear ?? dates.fiscal_year);
+      if (from_date < fiscal.from_date || to_date > fiscal.to_date) {
+        throw new ToolError("INVALID_ARGUMENT", "Trial Balance requires both dates within the selected fiscal year. Choose a range within that year, or request separate reports for each fiscal year. Dates were not changed and no report was run.");
+      }
+      const fiscal_year = fiscal.name;
       return runReport(
-        getProps,
+        async () => props,
         "Trial Balance",
         {
           company,
@@ -190,8 +202,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave General Ledger report. Detailed report ranges are limited to 366 days.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         accounts: NAMES,
         party_type: z.enum(["Customer", "Supplier", "Employee"]).optional(),
         parties: NAMES,
@@ -203,7 +214,9 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
       const groupBy = {
         voucher: "Categorize by Voucher",
@@ -212,7 +225,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         party: "Categorize by Party",
       }[group_by];
       return runReport(
-        getProps,
+        async () => props,
         "General Ledger",
         {
           company,
