@@ -39,5 +39,8 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Test Cloudflare request runtime
+        run: npm run test:runtime
+
       - name: Build Cloudflare Worker
         run: npx wrangler deploy --dry-run

@@ -241,7 +241,7 @@ describe("Frappe REST client", () => {
     const body = init.body as URLSearchParams;
     expect(body.get("grant_type")).toBe("refresh_token");
     expect(body.get("client_secret")).toBe("client-secret");
-    expect(init.redirect).toBe("error");
+    expect(init.redirect).toBe("manual");
     expect(init.signal).toBeInstanceOf(AbortSignal);
     expect(init.headers).not.toHaveProperty("Authorization");
   });
