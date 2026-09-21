@@ -65,13 +65,15 @@ describe("Frappe REST client", () => {
 
   it("aborts a stalled request and preserves a structured timeout error", async () => {
     vi.useFakeTimers();
-    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise((_resolve, reject) => {
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Promise((_resolve, reject) => {
       init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-    })));
+    }));
+    vi.stubGlobal("fetch", fetchMock);
     const result = frappeList({ ...API_TOKEN_PROPS, requestDeadline: Date.now() + 8000 }, "Customer", ["name"]);
     const check = expect(result).rejects.toThrow("UPSTREAM_TIMEOUT");
     await vi.advanceTimersByTimeAsync(8000);
     await check;
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it("does not start a second upstream request after the tool deadline", async () => {
@@ -88,6 +90,27 @@ describe("Frappe REST client", () => {
     await expect(result).rejects.not.toThrow("private upstream body");
   });
 
+  it("retries one transient upstream failure with the same read request", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 522 }))
+      .mockResolvedValueOnce(Response.json({ data: [{ name: "Example" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(frappeList(PROPS, "Customer", ["name"])).resolves.toEqual([{ name: "Example" }]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(fetchMock.mock.calls[0][0]);
+  });
+
+  it("stops after one retry when the upstream remains unavailable", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 522 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(frappeList(PROPS, "Customer", ["name"])).rejects.toThrow("UPSTREAM_UNAVAILABLE");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("maps a permission failure safely and cancels its unread body", async () => {
     const cancel = vi.fn();
     const body = new ReadableStream({
@@ -100,6 +123,7 @@ describe("Frappe REST client", () => {
     await expect(result).rejects.toThrow("PERMISSION_DENIED");
     await expect(result).rejects.not.toThrow("private permission detail");
     expect(cancel).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("rejects unfinished reports instead of reporting zero", async () => {
@@ -221,6 +245,20 @@ describe("Frappe REST client", () => {
     expect(JSON.parse(body.get("filters") ?? "{}")).toMatchObject({ company: "Example Company" });
     expect(body.get("ignore_prepared_report")).toBe("1");
     expect(body.get("are_default_filters")).toBe("0");
+  });
+
+  it("retries a transient report failure with the same report body", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 522 }))
+      .mockResolvedValueOnce(Response.json({ message: { columns: [], result: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(frappeRunReport(PROPS, "Accounts Payable", { company: "Example Company" }))
+      .resolves.toMatchObject({ result: [] });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(fetchMock.mock.calls[0][0]);
+    expect(fetchMock.mock.calls[1][1]?.body).toBe(fetchMock.mock.calls[0][1]?.body);
   });
 
   it("refreshes an expired upstream token", async () => {
