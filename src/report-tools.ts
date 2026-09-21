@@ -7,6 +7,7 @@ const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD f
 const NAME = z.string().trim().min(1).max(140);
 const NAMES = z.array(NAME).max(20).optional();
 const REPORT_LIMIT = z.number().int().min(1).max(200).default(100);
+const AGEING_SUMMARY_LIMIT = z.number().int().min(1).max(10).default(10);
 const PERIODICITY = z.enum(["Monthly", "Quarterly", "Half-Yearly", "Yearly"]);
 const STRUCTURAL_FIELDS = new Set([
   "indent",
@@ -235,6 +236,45 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
   );
 
   server.registerTool(
+    "get_accounts_receivable_summary",
+    {
+      description: "Return a compact NexWave Accounts Receivable ageing summary with totals and the largest customer balances.",
+      inputSchema: {
+        company: NAME,
+        report_date: DATE,
+        customers: NAMES,
+        customer_groups: NAMES,
+        ageing_based_on: z.enum(["Posting Date", "Due Date"]).default("Due Date"),
+        ageing_ranges: z.array(z.number().int().min(1).max(3650)).min(1).max(6).default([30, 60, 90, 120]),
+        cost_centres: NAMES,
+        projects: NAMES,
+        limit: AGEING_SUMMARY_LIMIT,
+      },
+    },
+    async ({ company, report_date, customers, customer_groups, ageing_based_on, ageing_ranges, cost_centres, projects, limit }) => {
+      validateDateRange(report_date, report_date);
+      validateAgeingRanges(ageing_ranges);
+      const filters = compactFilters({
+        company,
+        report_date,
+        party_type: "Customer",
+        party: customers,
+        customer_group: customer_groups,
+        ageing_based_on,
+        age_as_on: "Report Date",
+        range: ageing_ranges.join(", "),
+        group_by_party: 1,
+        cost_center: cost_centres,
+        project: projects,
+        show_future_payments: 0,
+        show_remarks: 0,
+      });
+      const data = await frappeRunReport(await getProps(), "Accounts Receivable", filters);
+      return textResult(normaliseAgeingSummary("Accounts Receivable", filters, data, ageing_ranges, limit));
+    },
+  );
+
+  server.registerTool(
     "get_accounts_receivable",
     {
       description: "Run the standard NexWave Accounts Receivable ageing report as at a report date.",
@@ -393,6 +433,39 @@ export function normaliseReportResult(
   };
 }
 
+export function normaliseAgeingSummary(
+  report: string,
+  filters: Record<string, unknown>,
+  data: FrappeReportResult,
+  ageingRanges: number[],
+  limit: number,
+) {
+  const allRows = (data.result ?? []).filter(isRecord);
+  const totalRow = [...allRows].reverse().find(isAgeingTotalRow);
+  const groupedRows = allRows.filter(isGroupedPartyRow);
+  const partyRows = groupedRows.length > 0 ? groupedRows : aggregatePartyRows(allRows);
+  const positiveBalances = partyRows
+    .filter((row) => numericValue(row.outstanding) > 0)
+    .sort((left, right) => numericValue(right.outstanding) - numericValue(left.outstanding));
+  const topCustomers = positiveBalances.slice(0, Math.min(limit, 10)).map((row) => ({
+    customer: cleanText(String(row.party)),
+    ...(typeof row.currency === "string" ? { currency: cleanText(row.currency) } : {}),
+    outstanding: numericValue(row.outstanding),
+    ageing: ageingBuckets(row, ageingRanges),
+  }));
+
+  return {
+    report,
+    totals: summariseAgeingTotals(totalRow ?? sumAgeingRows(partyRows), ageingRanges),
+    top_customers: topCustomers,
+    customer_count: partyRows.length,
+    invoice_count: allRows.filter((row) => typeof row.voucher_no === "string" && row.voucher_no.trim()).length,
+    truncated: positiveBalances.length > topCustomers.length,
+    filters,
+    ...(typeof data.execution_time === "number" ? { execution_time: data.execution_time } : {}),
+  };
+}
+
 export function validateDateRange(fromDate: string, toDate: string, maxDays?: number): void {
   const from = parseDate(fromDate);
   const to = parseDate(toDate);
@@ -442,6 +515,65 @@ function sanitiseSummary(summary: Record<string, unknown>): Record<string, unkno
     if (safe !== undefined) clean[key] = safe;
   }
   return clean;
+}
+
+function isAgeingTotalRow(row: Record<string, unknown>): boolean {
+  return typeof row.party === "string" && cleanText(row.party).toLowerCase() === "total";
+}
+
+function isGroupedPartyRow(row: Record<string, unknown>): boolean {
+  return row.bold === 1
+    && typeof row.party === "string"
+    && cleanText(row.party).toLowerCase() !== "total"
+    && !(typeof row.voucher_no === "string" && row.voucher_no.trim());
+}
+
+function aggregatePartyRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const totals = new Map<string, Record<string, unknown>>();
+  for (const row of rows) {
+    if (isAgeingTotalRow(row) || typeof row.party !== "string" || !row.party.trim()) continue;
+    const party = cleanText(row.party);
+    const currency = typeof row.currency === "string" ? cleanText(row.currency) : "";
+    const key = `${party}\u0000${currency}`;
+    const current = totals.get(key) ?? { party, ...(currency ? { currency } : {}) };
+    for (const field of ["invoiced", "paid", "credit_note", "outstanding", "range1", "range2", "range3", "range4", "range5", "range6", "range7"]) {
+      current[field] = numericValue(current[field]) + numericValue(row[field]);
+    }
+    totals.set(key, current);
+  }
+  return [...totals.values()];
+}
+
+function sumAgeingRows(rows: Array<Record<string, unknown>>): Record<string, unknown> {
+  const total: Record<string, unknown> = {};
+  for (const row of rows) {
+    if (!total.currency && typeof row.currency === "string") total.currency = cleanText(row.currency);
+    for (const field of ["invoiced", "paid", "credit_note", "outstanding", "range1", "range2", "range3", "range4", "range5", "range6", "range7"]) {
+      total[field] = numericValue(total[field]) + numericValue(row[field]);
+    }
+  }
+  return total;
+}
+
+function summariseAgeingTotals(row: Record<string, unknown>, ageingRanges: number[]) {
+  return {
+    ...(typeof row.currency === "string" ? { currency: cleanText(row.currency) } : {}),
+    invoiced: numericValue(row.invoiced),
+    paid: numericValue(row.paid),
+    credit_note: numericValue(row.credit_note),
+    outstanding: numericValue(row.outstanding),
+    ageing: ageingBuckets(row, ageingRanges),
+  };
+}
+
+function ageingBuckets(row: Record<string, unknown>, ageingRanges: number[]): Record<string, number> {
+  const labels = ageingRanges.map((upper, index) => index === 0 ? `0_to_${upper}_days` : `${ageingRanges[index - 1] + 1}_to_${upper}_days`);
+  labels.push(`over_${ageingRanges.at(-1)}_days`);
+  return Object.fromEntries(labels.map((label, index) => [label, numericValue(row[`range${index + 1}`])]));
+}
+
+function numericValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function safeValue(value: unknown): string | number | boolean | null | Array<string | number | boolean | null> | undefined {
