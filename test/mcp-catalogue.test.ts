@@ -50,6 +50,7 @@ describe("MCP tool catalogue", () => {
       "get_profit_and_loss",
       "get_trial_balance",
       "get_general_ledger",
+      "get_accounts_receivable_summary",
       "get_accounts_receivable",
       "get_accounts_payable",
       "get_bank_reconciliation_statement",
