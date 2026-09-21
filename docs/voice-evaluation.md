@@ -23,5 +23,17 @@ Use synthetic or authorized local data. Keep transcripts and credentials out of 
 | Permission denial | No broader query or authentication bypass |
 | A truncated list or report | State the limit; use complete server summary for totals |
 | An unrelated cooking question | Polite NexWave-only refusal |
+| Receivables overdue, with 1-30-day, due-today and future amounts | Quote explicit totals.overdue only when overdue_complete=true; never sum ageing buckets |
+| Receivables overdue_complete=false or field absent | Say the overdue total is unavailable; do not invent zero or subtract the first bucket |
+| Customer insights | Resolve once, then sequentially combine party balance, customer-filtered sales and relevant invoice details; give one concise summary |
+| Customer insights with two name candidates | Ask for an exact selection before any follow-up customer-specific report |
+| Customer insights with overdue invoices issued before this fiscal year | Oldest overdue invoice lookup retains customer/company and due-date cutoff, without a fiscal-year posting-date filter |
+| Customer insights at a historical snapshot | Use dated Accounts Receivable details or state the limitation; current invoice outstanding cannot prove historical debt |
+| Party/payable overdue is unconfirmed | Preserve known balance totals, but do not quote overdue without overdue_complete=true |
+| Recent invoices or orders include drafts/cancellations | State status where relevant; do not describe these as completed sales |
+| Customer insights with a report timeout | Stop remaining report chain, state confirmed partial findings and missing evidence; no automatic retry |
+| Supplier insights | Balance plus relevant invoice/order examples; no total-spend or reliability claim from a limited list |
+| A customer profit or growth question | Do not substitute company profit or infer growth from partial periods; state unsupported metrics |
+| Company overview asks for sales, receivables and orders | Keep the measures separate; do not add overlapping values together |
 
 Verify both `/mcp` OAuth and `/service/mcp` service-token paths. Automated tests cover the shared catalogue, OAuth token behavior, service authentication, null normalization, query construction, response errors and calculations. A final live voice test is still required to measure speech recognition, routing, interruption behavior and end-to-end latency.

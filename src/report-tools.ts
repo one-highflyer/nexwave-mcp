@@ -251,7 +251,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
   server.registerTool(
     "get_accounts_receivable_summary",
     {
-      description: "Return a compact NexWave Accounts Receivable ageing summary with totals and the largest customer balances.",
+      description: "Return a compact NexWave Accounts Receivable ageing summary with totals and the largest customer balances. Use totals.overdue only when overdue_complete is true; never infer overdue from ageing buckets. Overdue excludes due-today amounts and keeps unallocated credits separate.",
       inputSchema: {
         company: NAME,
         report_date: DATE,
@@ -474,6 +474,7 @@ export function normaliseAgeingSummary(
   const creditBreakdownComplete = allRows.length === 0
     || (documents.length > 0 && Math.abs(documentTotal - totals.outstanding) < 0.000001);
   const round = (value: number) => Math.round(value * 1e6) / 1e6;
+  const overdue = confirmedOverdue(documents, groupedRows, filters.report_date, creditBreakdownComplete);
   return {
     report,
     totals: {
@@ -482,8 +483,11 @@ export function normaliseAgeingSummary(
         positive_outstanding: round(documents.reduce((sum, row) => sum + Math.max(0, numericValue(row.outstanding)), 0)),
         credit_balance: round(documents.reduce((sum, row) => sum + Math.max(0, -numericValue(row.outstanding)), 0)),
       } : {}),
+      ...(overdue !== undefined ? { overdue: round(overdue) } : {}),
     },
     credit_breakdown_complete: creditBreakdownComplete,
+    overdue_complete: overdue !== undefined,
+    overdue_basis: "Positive document outstanding with a due date strictly before the report date, before allocation of unallocated credits. Posting date is used only when due date is absent. Amounts due today or later are excluded. If overdue_complete is false, no overdue total can be confirmed.",
     top_customers: topCustomers,
     customer_count: partyRows.length,
     invoice_count: allRows.filter((row) => typeof row.voucher_no === "string" && row.voucher_no.trim()).length,
@@ -491,6 +495,47 @@ export function normaliseAgeingSummary(
     filters,
     ...(typeof data.execution_time === "number" ? { execution_time: data.execution_time } : {}),
   };
+}
+
+function confirmedOverdue(
+  documents: Array<Record<string, unknown>>,
+  groupedRows: Array<Record<string, unknown>>,
+  reportDate: unknown,
+  detailsReconcile: boolean,
+): number | undefined {
+  if (!detailsReconcile || !validDate(reportDate)) return undefined;
+  // A matching grand total can hide missing details that cancel across customers.
+  if (groupedRows.length) {
+    const key = (row: Record<string, unknown>) => JSON.stringify([row.party, row.currency ?? ""]);
+    const balances = new Map<string, number>();
+    for (const row of documents) {
+      balances.set(key(row), (balances.get(key(row)) ?? 0) + numericValue(row.outstanding));
+    }
+    if (balances.size !== groupedRows.length || groupedRows.some((row) =>
+      !balances.has(key(row)) || Math.abs(balances.get(key(row))! - numericValue(row.outstanding)) >= 0.000001,
+    )) return undefined;
+  }
+  return documentOverdue(documents, reportDate);
+}
+
+export function documentOverdue(documents: Array<Record<string, unknown>>, reportDate: unknown): number | undefined {
+  if (!validDate(reportDate)) return undefined;
+  let overdue = 0;
+  for (const row of documents) {
+    if (numericValue(row.outstanding) <= 0) continue;
+    const missingDueDate = row.due_date === undefined || row.due_date === null
+      || (typeof row.due_date === "string" && !row.due_date.trim());
+    const dueDate = missingDueDate ? row.posting_date : row.due_date;
+    if (!validDate(dueDate)) return undefined;
+    if (dueDate < reportDate) overdue += numericValue(row.outstanding);
+  }
+  return overdue;
+}
+
+function validDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
 export function validateDateRange(fromDate: string, toDate: string, maxDays?: number): void {

@@ -201,6 +201,99 @@ describe("voice workflows through the public service MCP endpoint", () => {
       },
     });
   });
+
+  it("adds confirmed overdue through the service route without an extra request or broader filters", async () => {
+    const fetchMock = vi.fn(async (_input: string, init: RequestInit) => {
+      const body = new URLSearchParams(String(init.body));
+      expect(body.get("report_name")).toBe("Accounts Receivable");
+      expect(JSON.parse(body.get("filters")!)).toEqual({
+        company: "Example Company", report_date: "2026-06-30", party_type: "Customer",
+        party: ["CUS-001"], customer_group: ["Wholesale"], cost_center: ["Main"], project: ["PROJ-001"],
+        ageing_based_on: "Posting Date", age_as_on: "Report Date", range: "15, 45",
+        group_by_party: 1, show_future_payments: 0, show_remarks: 0,
+      });
+      return Response.json({ message: { result: [
+        { party: "CUS-001", voucher_no: "SINV-001", outstanding: 100, due_date: "2026-06-29", range2: 100, currency: "NZD" },
+        { party: "CUS-001", voucher_no: "SINV-002", outstanding: 40, due_date: "2026-06-30", range2: 40, currency: "NZD" },
+        { party: "CUS-001", bold: 1, outstanding: 140, range2: 140, currency: "NZD" },
+        {}, { party: "Total", bold: 1, outstanding: 140, range2: 140, currency: "NZD" },
+      ] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("get_accounts_receivable_summary", {
+      company: "Example Company", report_date: "2026-06-30", customers: ["CUS-001"],
+      customer_groups: ["Wholesale"], cost_centres: ["Main"], projects: ["PROJ-001"],
+      ageing_based_on: "Posting Date", ageing_ranges: [15, 45], limit: 1,
+    });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      overdue_complete: true, totals: { overdue: 100, outstanding: 140, ageing: { "16_to_45_days": 140 } },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("supports the customer insight tool sequence with one exact customer and distinct date scopes", async () => {
+    const fetchMock = vi.fn(async (input: string, init: RequestInit) => {
+      const url = new URL(input);
+      if (url.pathname.endsWith("/Customer")) return Response.json({ data: [
+        { name: "CUS-001", customer_name: "Example Retail Ltd", disabled: 0 },
+      ] });
+      if (url.pathname.includes("/Company/")) return Response.json({ data: { default_currency: "NZD" } });
+      if (url.pathname.endsWith("get_fiscal_year")) {
+        expect(url.searchParams.get("company")).toBe("Example Company");
+        expect(url.searchParams.get("date")).toBe("2026-06-30");
+        return Response.json({ message: ["2026-2027", "2026-04-01", "2027-03-31"] });
+      }
+      if (url.pathname.endsWith("query_report.run")) {
+        const body = new URLSearchParams(String(init.body));
+        const filters = JSON.parse(body.get("filters")!);
+        expect(filters.company).toBe("Example Company");
+        if (body.get("report_name") === "Accounts Receivable") {
+          expect(filters.party).toEqual(["CUS-001"]);
+          expect(filters.report_date).toBe("2026-06-30");
+          return Response.json({ message: { result: [
+            { party: "CUS-001", voucher_no: "SINV-001", outstanding: 100, due_date: "2026-03-01" },
+          ] } });
+        }
+        expect(body.get("report_name")).toBe("Item-wise Sales Register");
+        expect(filters).toEqual({ company: "Example Company", customer: "CUS-001", from_date: "2026-04-01", to_date: "2026-06-30" });
+        return Response.json({ message: { result: [
+          { invoice: "SINV-002", posting_date: "2026-05-01", amount: 200 },
+        ] } });
+      }
+      expect(decodeURIComponent(url.pathname)).toBe("/api/resource/Sales Invoice");
+      const filters = JSON.parse(url.searchParams.get("filters")!);
+      expect(filters).toEqual(expect.arrayContaining([
+        ["Sales Invoice", "company", "=", "Example Company"],
+        ["Sales Invoice", "customer", "=", "CUS-001"],
+        ["Sales Invoice", "due_date", "<", "2026-06-30"],
+        ["Sales Invoice", "docstatus", "=", 1],
+        ["Sales Invoice", "outstanding_amount", ">", 0],
+      ]));
+      expect(filters.some((filter: unknown[]) => filter[1] === "posting_date")).toBe(false);
+      expect(url.searchParams.get("order_by")).toBe("due_date asc");
+      return Response.json({ data: [{ name: "SINV-001", customer: "CUS-001", due_date: "2026-03-01", outstanding_amount: 100 }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const balance = await invokeTool("get_party_balance", {
+      company: "Example Company", party_type: "Customer", query: "Example Retail Ltd", report_date: "2026-06-30",
+    });
+    expect(balance.isError).not.toBe(true);
+    const party = JSON.parse(balance.content[0].text);
+    expect(party).toMatchObject({ status: "matched", party: "CUS-001", totals: { overdue: 100 } });
+    const sales = await invokeTool("get_sales_summary", {
+      company: "Example Company", customer: party.party, group_by: "month", limit: 12,
+      period: "current_fiscal_year", as_of_date: "2026-06-30", from_date: null, to_date: null,
+    });
+    expect(sales.isError).not.toBe(true);
+    expect(JSON.parse(sales.content[0].text)).toMatchObject({ total_net_sales: 200, totals_complete: true });
+    const invoices = await invokeTool("list_sales_invoices", {
+      company: "Example Company", customer: party.party, overdue_as_of: "2026-06-30",
+      sort_by: "due_date", sort_order: "asc", limit: 3,
+    });
+    expect(invoices.isError).not.toBe(true);
+    expect(invoices.content[0].text).toContain("SINV-001");
+  });
 });
 
 type ToolResult = {

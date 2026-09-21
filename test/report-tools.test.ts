@@ -136,4 +136,86 @@ describe("report tool output", () => {
     expect(result.totals).not.toHaveProperty("positive_outstanding");
     expect(result.totals).not.toHaveProperty("credit_balance");
   });
+
+  it("calculates overdue from document dates, not ageing buckets or displayed customer limits", () => {
+    const result = normaliseAgeingSummary("Accounts Receivable", {
+      report_date: "2026-06-30", ageing_based_on: "Posting Date", group_by_party: 1,
+    }, { result: [
+      { party: "C-001", voucher_no: "INV-001", outstanding: 100, due_date: "2026-06-29", range1: 100 },
+      { party: "C-001", voucher_no: "INV-002", outstanding: 40, due_date: "2026-06-01", range1: 40 },
+      { party: "C-001", voucher_no: "INV-003", outstanding: 30, due_date: "2026-06-30", range2: 30 },
+      { party: "C-001", voucher_no: "INV-004", outstanding: 20, due_date: "2026-07-01", range2: 20 },
+      { party: "C-001", voucher_no: "PAY-001", outstanding: -25 },
+      { party: "C-001", bold: 1, outstanding: 165, range1: 140, range2: 50 },
+      {},
+      { party: "C-002", voucher_no: "INV-005", outstanding: 50, due_date: "2026-04-01", range3: 50 },
+      { party: "C-002", bold: 1, outstanding: 50, range3: 50 },
+      {},
+      { party: "Total", bold: 1, outstanding: 215, range1: 140, range2: 50, range3: 50 },
+    ] }, [30, 60, 90, 120], 1);
+
+    expect(result).toMatchObject({ overdue_complete: true, truncated: true,
+      totals: { outstanding: 215, positive_outstanding: 240, credit_balance: 25, overdue: 190 },
+    });
+    expect(result.overdue_basis).toContain("before allocation of unallocated credits");
+    expect(result.top_customers).toHaveLength(1);
+  });
+
+  it.each([undefined, null, "", "   "])("uses posting date only when due date is absent or blank (%s)", (dueDate) => {
+    const result = normaliseAgeingSummary("Accounts Receivable", { report_date: "2026-06-30" }, {
+      result: [{ party: "C-001", voucher_no: "JE-001", outstanding: 12.34, due_date: dueDate, posting_date: "2026-06-29" }],
+    }, [30, 60, 90, 120], 5);
+    expect(result).toMatchObject({ overdue_complete: true, totals: { overdue: 12.34 } });
+  });
+
+  it.each([
+    { due_date: undefined, posting_date: undefined },
+    { due_date: "invalid", posting_date: "2026-06-01" },
+    { due_date: "2026-02-30", posting_date: "2026-06-01" },
+    { due_date: 20260601, posting_date: "2026-06-01" },
+  ])("does not assert overdue when a positive document has an unknown date: %j", (dates) => {
+    const result = normaliseAgeingSummary("Accounts Receivable", { report_date: "2026-06-30" }, {
+      result: [{ party: "C-001", voucher_no: "INV-001", outstanding: 100, ...dates }],
+    }, [30, 60, 90, 120], 5);
+    expect(result.overdue_complete).toBe(false);
+    expect(result.totals.outstanding).toBe(100);
+    expect(result.totals).not.toHaveProperty("overdue");
+  });
+
+  it.each([
+    [{ party: "C-001", bold: 1, outstanding: 0 }],
+    [
+      { party: "C-001", voucher_no: "INV-001", outstanding: 100, due_date: "2026-06-01" },
+      { party: "C-001", bold: 1, outstanding: 100 },
+      { party: "C-002", bold: 1, outstanding: 0 },
+    ],
+    [
+      { party: "C-001", voucher_no: "INV-001", outstanding: 100, due_date: "2026-06-01" },
+      { party: "C-001", bold: 1, outstanding: 75 },
+      { party: "C-002", voucher_no: "INV-002", outstanding: 100, due_date: "2026-06-01" },
+      { party: "C-002", bold: 1, outstanding: 125 },
+    ],
+  ])("does not infer overdue from incomplete per-customer details %#", (...rows) => {
+    const result = normaliseAgeingSummary("Accounts Receivable", { report_date: "2026-06-30" }, {
+      result: rows,
+    }, [30, 60, 90, 120], 5);
+    expect(result.overdue_complete).toBe(false);
+    expect(result.totals).not.toHaveProperty("overdue");
+  });
+
+  it("confirms zero overdue for a completed empty report", () => {
+    const result = normaliseAgeingSummary("Accounts Receivable", { report_date: "2026-06-30" }, {
+      result: [],
+    }, [30, 60, 90, 120], 5);
+    expect(result).toMatchObject({ overdue_complete: true, totals: { overdue: 0 } });
+  });
+
+  it("keeps a customer named Total in the overdue calculation", () => {
+    const result = normaliseAgeingSummary("Accounts Receivable", { report_date: "2026-06-30" }, { result: [
+      { party: "Total", voucher_no: "INV-001", outstanding: 100, due_date: "2026-06-29" },
+      { party: "Total", bold: 1, outstanding: 100 }, {},
+      { party: "Total", bold: 1, outstanding: 100 },
+    ] }, [30, 60, 90, 120], 5);
+    expect(result).toMatchObject({ overdue_complete: true, totals: { overdue: 100 }, customer_count: 1 });
+  });
 });

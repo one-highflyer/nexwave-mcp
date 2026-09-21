@@ -3,7 +3,7 @@ import { z } from "zod";
 import { frappeGet, frappeList, frappeRunReport, type FrappeReportResult } from "./frappe";
 import { searchRecords } from "./search";
 import { structuredResult, ToolError } from "./tool-result";
-import { validateDateRange } from "./report-tools";
+import { documentOverdue, validateDateRange } from "./report-tools";
 import type { NexWaveAuthProps } from "./types";
 
 const NAME = z.string().trim().min(1).max(140);
@@ -86,6 +86,7 @@ async function partySummary(
 export function summarisePartyBalances(data: FrappeReportResult, currency: string, reportDate: string, limit: number) {
   const balances = new Map<string, { party: string; outstanding: number; positive_outstanding: number; credit_balance: number; overdue: number }>();
   let invoiceCount = 0;
+  let overdueComplete = true;
   // group_by_party=0: only document rows can contribute, never report totals.
   for (const row of data.result ?? []) {
     if (row.is_total_row === true) continue;
@@ -97,11 +98,9 @@ export function summarisePartyBalances(data: FrappeReportResult, currency: strin
     balance.outstanding += row.outstanding;
     balance.positive_outstanding += Math.max(0, row.outstanding);
     balance.credit_balance += Math.max(0, -row.outstanding);
-    const dueDate = row.due_date || row.posting_date;
-    if (typeof dueDate === "string") {
-      validateDateRange(dueDate, dueDate);
-      if (dueDate < reportDate) balance.overdue += Math.max(0, row.outstanding);
-    }
+    const overdue = documentOverdue([row], reportDate);
+    if (overdue === undefined) overdueComplete = false;
+    else balance.overdue += overdue;
     balances.set(row.party, balance);
     invoiceCount += 1;
   }
@@ -112,13 +111,14 @@ export function summarisePartyBalances(data: FrappeReportResult, currency: strin
   const total = (field: "outstanding" | "positive_outstanding" | "credit_balance" | "overdue") => round(rows.reduce((sum, row) => sum + row[field], 0));
   return {
     currency,
-    totals: { outstanding: total("outstanding"), positive_outstanding: total("positive_outstanding"), credit_balance: total("credit_balance"), overdue: total("overdue") },
-    top_parties: rows.sort((a, b) => b.outstanding - a.outstanding).slice(0, limit).map((row) => ({
-      ...row, outstanding: round(row.outstanding), positive_outstanding: round(row.positive_outstanding), credit_balance: round(row.credit_balance), overdue: round(row.overdue),
+    totals: { outstanding: total("outstanding"), positive_outstanding: total("positive_outstanding"), credit_balance: total("credit_balance"), ...(overdueComplete ? { overdue: total("overdue") } : {}) },
+    top_parties: rows.sort((a, b) => b.outstanding - a.outstanding).slice(0, limit).map(({ overdue, ...row }) => ({
+      ...row, outstanding: round(row.outstanding), positive_outstanding: round(row.positive_outstanding), credit_balance: round(row.credit_balance), ...(overdueComplete ? { overdue: round(overdue) } : {}),
     })),
     party_count: rows.length, document_count: invoiceCount, truncated: rows.length > limit,
     totals_complete: true,
-    note: "Credits are shown separately. Overdue is positive document outstanding before the report date, before allocation of unallocated credits.",
+    overdue_complete: overdueComplete,
+    note: "Credits are shown separately. Overdue is positive document outstanding due strictly before the report date, before allocation of unallocated credits. Posting date is used only when due date is absent. If overdue_complete is false, no overdue total can be confirmed.",
   };
 }
 
