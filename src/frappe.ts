@@ -3,6 +3,8 @@ import { ToolError } from "./tool-result";
 
 export const UPSTREAM_TIMEOUT_MS = 8_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_READ_ATTEMPTS = 2;
+const MIN_RETRY_BUDGET_MS = 250;
 
 interface FrappeEnvelope<T> {
   data?: T;
@@ -235,10 +237,43 @@ function remainingTime(props: NexWaveAuthProps): number {
 }
 
 async function frappeFetch<T>(url: string, authorization: string, init: RequestInit = {}, timeoutMs = UPSTREAM_TIMEOUT_MS): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  const requestId = crypto.randomUUID();
+  let lastError: ToolError | undefined;
+  for (let attempt = 1; attempt <= MAX_READ_ATTEMPTS; attempt += 1) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) break;
+    try {
+      return await frappeFetchAttempt<T>(url, authorization, init, remainingMs, requestId, attempt);
+    } catch (error) {
+      if (!(error instanceof ToolError)) throw error;
+      lastError = error;
+      const retryBudgetMs = deadline - Date.now();
+      if (!error.retryable || attempt >= MAX_READ_ATTEMPTS || retryBudgetMs < MIN_RETRY_BUDGET_MS) throw error;
+      console.warn(JSON.stringify({
+        event: "frappe_request_retry",
+        request_id: requestId,
+        completed_attempt: attempt,
+        next_attempt: attempt + 1,
+        remaining_ms: retryBudgetMs,
+        code: error.code,
+      }));
+    }
+  }
+  throw lastError ?? new ToolError("UPSTREAM_TIMEOUT", "The request time limit was reached. Please try again later.", true);
+}
+
+async function frappeFetchAttempt<T>(
+  url: string,
+  authorization: string,
+  init: RequestInit,
+  timeoutMs: number,
+  requestId: string,
+  attempt: number,
+): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const started = Date.now();
-  const requestId = crypto.randomUUID();
   let status: number | undefined;
   try {
     const response = await fetch(url, {
@@ -278,7 +313,7 @@ async function frappeFetch<T>(url: string, authorization: string, init: RequestI
       ? new ToolError("UPSTREAM_TIMEOUT", "NexWave did not respond in time. Do not treat this as no matching records.", true)
       : error instanceof ToolError ? error
       : new ToolError("UPSTREAM_UNAVAILABLE", "The NexWave request failed. Please try again later.", true);
-    console.warn(JSON.stringify({ event: "frappe_request_failed", request_id: requestId, duration_ms: Date.now() - started, status, code: safe.code }));
+    console.warn(JSON.stringify({ event: "frappe_request_failed", request_id: requestId, attempt, duration_ms: Date.now() - started, status, code: safe.code }));
     throw safe;
   } finally {
     clearTimeout(timer);
