@@ -453,7 +453,8 @@ export function normaliseAgeingSummary(
   ageingRanges: number[],
   limit: number,
 ) {
-  const allRows = (data.result ?? []).filter(isRecord);
+  const allRows = (data.result ?? []).filter((row) => isRecord(row) && row.is_total_row !== true);
+  validateAgeingRows(allRows);
   const totalRow = [...allRows].reverse().find(isAgeingTotalRow);
   const groupedRows = allRows.filter((row) => row !== totalRow && isGroupedPartyRow(row));
   const partyRows = groupedRows.length > 0 ? groupedRows : aggregatePartyRows(allRows, totalRow);
@@ -467,9 +468,22 @@ export function normaliseAgeingSummary(
     ageing: ageingBuckets(row, ageingRanges),
   }));
 
+  const totals = summariseAgeingTotals(totalRow ?? sumAgeingRows(partyRows), ageingRanges);
+  const documents = allRows.filter((row) => typeof row.voucher_no === "string" && row.voucher_no.trim());
+  const documentTotal = documents.reduce((sum, row) => sum + numericValue(row.outstanding), 0);
+  const creditBreakdownComplete = allRows.length === 0
+    || (documents.length > 0 && Math.abs(documentTotal - totals.outstanding) < 0.000001);
+  const round = (value: number) => Math.round(value * 1e6) / 1e6;
   return {
     report,
-    totals: summariseAgeingTotals(totalRow ?? sumAgeingRows(partyRows), ageingRanges),
+    totals: {
+      ...totals,
+      ...(creditBreakdownComplete ? {
+        positive_outstanding: round(documents.reduce((sum, row) => sum + Math.max(0, numericValue(row.outstanding)), 0)),
+        credit_balance: round(documents.reduce((sum, row) => sum + Math.max(0, -numericValue(row.outstanding)), 0)),
+      } : {}),
+    },
+    credit_breakdown_complete: creditBreakdownComplete,
     top_customers: topCustomers,
     customer_count: partyRows.length,
     invoice_count: allRows.filter((row) => typeof row.voucher_no === "string" && row.voucher_no.trim()).length,
@@ -482,17 +496,17 @@ export function normaliseAgeingSummary(
 export function validateDateRange(fromDate: string, toDate: string, maxDays?: number): void {
   const from = parseDate(fromDate);
   const to = parseDate(toDate);
-  if (from > to) throw new Error("From date must be on or before to date.");
+  if (from > to) throw new ToolError("INVALID_ARGUMENT", "From date must be on or before to date.");
   const dayCount = Math.floor((to.getTime() - from.getTime()) / 86_400_000) + 1;
   if (maxDays && dayCount > maxDays) {
-    throw new Error(`This detailed report supports a maximum date range of ${maxDays} days.`);
+    throw new ToolError("INVALID_ARGUMENT", `This detailed report supports a maximum date range of ${maxDays} days.`);
   }
 }
 
 function parseDate(value: string): Date {
   const parsed = new Date(`${value}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
-    throw new Error("Use valid dates in YYYY-MM-DD format.");
+    throw new ToolError("INVALID_ARGUMENT", "Use valid dates in YYYY-MM-DD format.");
   }
   return parsed;
 }
@@ -500,7 +514,7 @@ function parseDate(value: string): Date {
 function validateAgeingRanges(values: number[]): void {
   for (let index = 1; index < values.length; index += 1) {
     if (values[index] <= values[index - 1]) {
-      throw new Error("Ageing ranges must be in ascending order without duplicates.");
+      throw new ToolError("INVALID_ARGUMENT", "Ageing ranges must be in ascending order without duplicates.");
     }
   }
 }
@@ -531,7 +545,26 @@ function sanitiseSummary(summary: Record<string, unknown>): Record<string, unkno
 }
 
 function isAgeingTotalRow(row: Record<string, unknown>): boolean {
-  return typeof row.party === "string" && cleanText(row.party).toLowerCase() === "total";
+  return typeof row.party === "string" && cleanText(row.party).toLowerCase() === "total"
+    && !(typeof row.voucher_no === "string" && row.voucher_no.trim());
+}
+
+function validateAgeingRows(rows: Array<Record<string, unknown>>): void {
+  const amountFields = ["invoiced", "paid", "credit_note", "outstanding", "range1", "range2", "range3", "range4", "range5", "range6", "range7"];
+  let financialRows = 0;
+  for (const row of rows) {
+    // ERPNext inserts empty spacer rows between party groups.
+    if (Object.values(row).every((value) => value === null || value === undefined || value === "")) continue;
+    if (typeof row.party !== "string" || !row.party.trim()
+      || !(row.bold === 1 || (typeof row.voucher_no === "string" && row.voucher_no.trim()))
+      || typeof row.outstanding !== "number" || !Number.isFinite(row.outstanding)
+      || amountFields.some((field) => row[field] !== undefined && row[field] !== null
+        && (typeof row[field] !== "number" || !Number.isFinite(row[field])))) {
+      throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The receivables report contains invalid financial rows. No balance can be confirmed.");
+    }
+    financialRows++;
+  }
+  if (rows.length && !financialRows) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The receivables report contains no recognisable financial rows. No zero balance can be inferred.");
 }
 
 function isGroupedPartyRow(row: Record<string, unknown>): boolean {

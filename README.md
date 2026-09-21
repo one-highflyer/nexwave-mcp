@@ -138,6 +138,7 @@ All tools are read-only. List results and report output are bounded to keep MCP 
 | `get_trial_balance` | Trial Balance |
 | `get_general_ledger` | General Ledger |
 | `get_accounts_receivable` | Accounts Receivable |
+| `get_accounts_receivable_summary` | Accounts Receivable totals and top customer balances |
 | `get_accounts_payable` | Accounts Payable |
 | `get_bank_reconciliation_statement` | Bank Reconciliation Statement |
 
@@ -145,7 +146,7 @@ Report names and filters are allowlisted. Detailed reports have date-range limit
 
 ### Search and voice queries
 
-Directory tools search record IDs and display names. If the full phrase has no matches, they make one bounded token search and compare normalized names, including common legal suffixes for companies and parties. Fallbacks preserve explicit filters and permissions. Partial or ambiguous names require confirmation. Empty search strings and the existing text-array list responses remain supported; `structuredContent` adds match status, candidates, and truncation metadata.
+Directory tools search record IDs and display names. If the full phrase has no exact match, they make one bounded token search and compare normalized names, including common legal suffixes for companies and parties. Fallbacks preserve explicit filters and permissions. Partial or ambiguous names require confirmation. Empty search strings and the existing text-array list responses remain supported; `structuredContent` adds match status, candidates, and truncation metadata.
 
 Invoice and order tools accept `customer_query` or `supplier_query` for spoken names. Exact `customer` and `supplier` filters must use confirmed record IDs. Do not combine a spoken query and its exact filter. `search` is document text, not an unrestricted filter language. SQL wildcard characters in text are escaped.
 

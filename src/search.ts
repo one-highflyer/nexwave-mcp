@@ -41,17 +41,24 @@ export async function searchRecords(
   });
   // Candidate retrieval is bounded. A full page must never establish a unique match.
   let rows = await search(query ? [query] : [], query && options.directory ? 50 : options.limit);
+  const normalized = query ? normaliseName(query, options.legalNames) : "";
+  const hasExactMatch = rows.some((row) => Boolean(query && (
+    String(row.name).toLowerCase() === query.toLowerCase()
+    || searchFields.some((field) => normaliseName(String(row[field] ?? ""), options.legalNames) === normalized)
+  )));
+  let candidateLimitReached = rows.length === (query && options.directory ? 50 : options.limit);
   let broadened = false;
-  if (query && options.directory && rows.length === 0) {
+  if (query && options.directory && !hasExactMatch) {
     const tokens = [...new Set(normaliseName(query, options.legalNames).split(" ").filter((word) => word.length >= 2))];
     const terms = tokens.sort((a, b) => b.length - a.length).slice(0, 3);
     if (terms.length && !(terms.length === 1 && terms[0] === query.toLowerCase())) {
-      rows = await search(terms, 50);
+      const fallback = await search(terms, 50);
+      const candidates = new Map([...rows, ...fallback].map((row) => [String(row.name), row]));
+      rows = [...candidates.values()];
+      candidateLimitReached ||= fallback.length === 50 || rows.length >= 50;
       broadened = true;
     }
   }
-  const candidateLimitReached = rows.length === (query && options.directory ? 50 : options.limit);
-  const normalized = query ? normaliseName(query, options.legalNames) : "";
   const ranked = rows.map((record) => {
     const values = searchFields.map((field) => normaliseName(String(record[field] ?? ""), options.legalNames));
     const exactId = Boolean(query && String(record.name).toLowerCase() === query.toLowerCase());

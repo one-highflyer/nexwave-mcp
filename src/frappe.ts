@@ -25,6 +25,7 @@ export interface FrappeReportResult {
   columns?: FrappeReportColumn[];
   report_summary?: Array<Record<string, unknown>>;
   execution_time?: number;
+  add_total_row?: boolean | number;
 }
 
 export interface UpstreamTokenResponse {
@@ -59,7 +60,7 @@ export async function refreshFrappeToken(props: NexWaveOAuthAuthProps): Promise<
     refresh_token: props.upstreamRefreshToken,
     client_id: props.upstreamClientId,
     client_secret: props.upstreamClientSecret,
-  });
+  }, Math.min(UPSTREAM_TIMEOUT_MS, remainingTime(props)));
   return {
     ...props,
     upstreamAccessToken: token.access_token,
@@ -100,17 +101,21 @@ export async function frappeList<T>(
   if (options.orFilters?.length) url.searchParams.set("or_filters", JSON.stringify(options.orFilters));
   if (options.orderBy) url.searchParams.set("order_by", options.orderBy);
   const response = await frappeFetch<FrappeEnvelope<T[]>>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
-  if (!Array.isArray(response.data)) {
+  const requiresName = fields.includes("name");
+  if (!Array.isArray(response.data) || !response.data.every((row) => isRecord(row)
+    && (!requiresName || (typeof row.name === "string" && Boolean(row.name.trim()))))) {
     throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave did not return a valid record list.");
   }
-  return response.data;
+  return response.data as T[];
 }
 
 export async function frappeGet<T>(props: NexWaveAuthProps, doctype: string, name: string): Promise<T> {
   const url = new URL(`/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, props.baseUrl);
   const response = await frappeFetch<FrappeEnvelope<T>>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
-  if (!response.data) throw new Error(`${doctype} ${name} was not found.`);
-  return response.data;
+  if (!isRecord(response.data)) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave did not return a valid record.");
+  }
+  return response.data as T;
 }
 
 export async function frappeRunReport(
@@ -134,7 +139,14 @@ export async function frappeRunReport(
   if (!response.message || !Array.isArray(response.message.result)) {
     throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave did not return a completed report. No balance can be inferred.");
   }
-  return response.message;
+  return {
+    ...response.message,
+    result: normaliseReportRows(
+      response.message.result,
+      response.message.columns,
+      Boolean(response.message.add_total_row),
+    ),
+  };
 }
 
 export async function frappeFiscalYear(props: NexWaveAuthProps, company: string, date: string, fiscalYear?: string) {
@@ -159,17 +171,50 @@ export async function ensureFreshToken(props: NexWaveAuthProps): Promise<NexWave
   return refreshFrappeToken(props);
 }
 
-async function requestToken(baseUrl: string, values: Record<string, string>): Promise<UpstreamTokenResponse> {
-  const response = await fetch(`${baseUrl}/api/method/frappe.integrations.oauth2.get_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
-    body: new URLSearchParams(values),
-  });
-  const payload = (await response.json().catch(() => ({}))) as Partial<UpstreamTokenResponse> & { error_description?: string };
-  if (!response.ok || !payload.access_token) {
-    throw new Error(payload.error_description || `NexWave OAuth returned HTTP ${response.status}.`);
+async function requestToken(
+  baseUrl: string,
+  values: Record<string, string>,
+  timeoutMs = UPSTREAM_TIMEOUT_MS,
+): Promise<UpstreamTokenResponse> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}/api/method/frappe.integrations.oauth2.get_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+      body: new URLSearchParams(values),
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      if ([400, 401, 403].includes(response.status)) {
+        throw new ToolError("AUTHENTICATION_REQUIRED", "The NexWave connection needs to be authenticated again.");
+      }
+      throw new ToolError("UPSTREAM_UNAVAILABLE", `NexWave OAuth returned HTTP ${response.status}.`, response.status === 429 || response.status >= 500);
+    }
+    const payload = await readBoundedJson(response);
+    if (!isRecord(payload)
+      || typeof payload.access_token !== "string"
+      || !payload.access_token.trim()
+      || payload.access_token !== payload.access_token.trim()
+      || (payload.refresh_token !== undefined && (typeof payload.refresh_token !== "string"
+        || !payload.refresh_token.trim()
+        || payload.refresh_token !== payload.refresh_token.trim()))
+      || (payload.expires_in !== undefined && (typeof payload.expires_in !== "number" || !Number.isFinite(payload.expires_in) || payload.expires_in <= 0))
+      || (payload.token_type !== undefined && typeof payload.token_type !== "string")) {
+      throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave OAuth returned an invalid token response.");
+    }
+    return payload as unknown as UpstreamTokenResponse;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new ToolError("UPSTREAM_TIMEOUT", "NexWave OAuth did not respond in time.", true);
+    }
+    if (error instanceof ToolError) throw error;
+    throw new ToolError("UPSTREAM_UNAVAILABLE", "The NexWave OAuth request failed. Please try again later.", true);
+  } finally {
+    clearTimeout(timer);
   }
-  return payload as UpstreamTokenResponse;
 }
 
 function upstreamAuthorization(props: NexWaveAuthProps): string {
@@ -259,4 +304,31 @@ async function readBoundedJson(response: Response): Promise<unknown> {
   } catch {
     throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave returned invalid JSON. This does not mean there are no records.");
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normaliseReportRows(
+  rows: unknown[],
+  columns: FrappeReportColumn[] | undefined,
+  hasTotalRow: boolean,
+): Array<Record<string, unknown>> {
+  return rows.map((row, rowIndex) => {
+    if (isRecord(row)) return row;
+    if (!Array.isArray(row) || !Array.isArray(columns) || row.length > columns.length) {
+      throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave returned an invalid report row. No balance can be inferred.");
+    }
+    const record: Record<string, unknown> = {};
+    for (let index = 0; index < row.length; index++) {
+      const column = columns[index];
+      if (!isRecord(column) || typeof column.fieldname !== "string" || !column.fieldname.trim()) {
+        throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave returned invalid report columns. No balance can be inferred.");
+      }
+      record[column.fieldname] = row[index];
+    }
+    if (hasTotalRow && rowIndex === rows.length - 1) record.is_total_row = true;
+    return record;
+  });
 }

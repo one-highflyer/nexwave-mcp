@@ -1,7 +1,22 @@
-import { describe, expect, it } from "vitest";
-import { summariseSales, summariseStockRisk } from "../src/insight-tools";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { registerInsightTools, summariseSales, summariseStockRisk } from "../src/insight-tools";
+import type { NexWaveAuthProps } from "../src/types";
+
+const PROPS: NexWaveAuthProps = {
+  authType: "api_token",
+  siteId: "site_test",
+  siteName: "Demo",
+  baseUrl: "https://demo.example.com",
+  user: "service@example.com",
+  upstreamApiKey: "api-key",
+  upstreamApiSecret: "api-secret",
+};
+
+type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
 describe("business summaries", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("groups all sales before limiting and excludes the report total row", () => {
     const result = summariseSales({ result: [
       { invoice: "INV-001", customer: "C-001", customer_name: "Example One", amount: 100 },
@@ -22,6 +37,46 @@ describe("business summaries", () => {
     expect(() => summariseSales({ result: [{ invoice: "INV-001", customer: "C-001", amount: "100" }] }, "customer", 5)).toThrow("UPSTREAM_INVALID_RESPONSE");
   });
 
+  it.each([undefined, "", "   "])("requires an item code instead of merging rows by item name: %j", (itemCode) => {
+    expect(() => summariseSales({ result: [
+      { invoice: "INV-001", item_code: itemCode, item_name: "Shared label", amount: 25 },
+      { invoice: "INV-002", item_code: itemCode, item_name: "Shared label", amount: 50 },
+    ] }, "item", 5)).toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
+  it("rounds the complete sales total after summing unrounded groups", () => {
+    const result = summariseSales({ result: [
+      { invoice: "INV-001", customer: "C-001", amount: 0.0000006 },
+      { invoice: "INV-002", customer: "C-002", amount: 0.0000006 },
+    ] }, "customer", 5);
+    expect(result.groups.map((group) => group.net_sales)).toEqual([0.000001, 0.000001]);
+    expect(result.total_net_sales).toBe(0.000001);
+  });
+
+  it("ranks sales groups by their unrounded totals", () => {
+    const result = summariseSales({ result: [
+      { invoice: "INV-001", customer: "C-001", amount: 1.0000001 },
+      { invoice: "INV-002", customer: "C-002", amount: 1.0000004 },
+    ] }, "customer", 1);
+    expect(result.groups).toEqual([{ name: "C-002", label: "C-002", net_sales: 1 }]);
+  });
+
+  it.each(["   ", 123, null])("rejects an invalid company currency: %j", async (defaultCurrency) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/Company/")) return Response.json({ data: { default_currency: defaultCurrency } });
+      return Response.json({ message: { result: [] } });
+    }));
+    const handler = registeredHandler("get_sales_summary");
+    await expect(handler({
+      company: "Example Company",
+      from_date: "2026-09-01",
+      to_date: "2026-09-21",
+      group_by: "customer",
+      limit: 5,
+    })).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
   it("reports unknown thresholds separately from actual stock risk", () => {
     const common = { warehouse: "Stores", stock_uom: "Nos", actual_qty: 2, projected_qty: 3, re_order_qty: 0, re_order_level: 0 };
     const data = { result: [
@@ -34,4 +89,26 @@ describe("business summaries", () => {
     expect(result.rows[0]).toMatchObject({ item_code: "I-002", shortage_qty: 2 });
     expect(summariseStockRisk(data, 1, 4)).toMatchObject({ risk_count: 3, missing_threshold_rows: 0, truncated: true });
   });
+
+  it("treats a reorder quantity with a zero level as configured", () => {
+    const result = summariseStockRisk({ result: [{
+      item_code: "I-001", warehouse: "Stores", stock_uom: "Nos",
+      actual_qty: 0, projected_qty: 0, re_order_level: 0, re_order_qty: 5,
+    }] }, 5);
+    expect(result).toMatchObject({ checked_rows: 1, missing_threshold_rows: 0, risk_count: 1 });
+    expect(result.rows[0]).toMatchObject({ item_code: "I-001", threshold: 0, shortage_qty: 0 });
+  });
 });
+
+function registeredHandler(toolName: string): ToolHandler {
+  const handlers = new Map<string, ToolHandler>();
+  const server = {
+    registerTool(name: string, _definition: unknown, handler: ToolHandler) {
+      handlers.set(name, handler);
+    },
+  };
+  registerInsightTools(server as never, async () => PROPS);
+  const handler = handlers.get(toolName);
+  if (!handler) throw new Error(`Tool ${toolName} was not registered.`);
+  return handler;
+}

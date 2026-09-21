@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ensureFreshToken, frappeList, frappeRunReport, getApiTokenUser, getLoggedUser } from "../src/frappe";
+import {
+  ensureFreshToken,
+  exchangeFrappeCode,
+  frappeGet,
+  frappeList,
+  frappeRunReport,
+  getApiTokenUser,
+  getLoggedUser,
+} from "../src/frappe";
 import type { NexWaveApiTokenAuthProps, NexWaveOAuthAuthProps } from "../src/types";
 
 const PROPS: NexWaveOAuthAuthProps = {
@@ -33,6 +41,28 @@ describe("Frappe REST client", () => {
     await expect(frappeList(PROPS, "Customer", ["name"])).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
   });
 
+  it.each([
+    ["null row", [null]],
+    ["array row", [[]]],
+    ["scalar row", ["CUS-001"]],
+    ["missing name", [{}]],
+    ["empty name", [{ name: "" }]],
+    ["blank name", [{ name: "   " }]],
+  ])("rejects a malformed record list with a %s", async (_label, data) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data })));
+    await expect(frappeList(PROPS, "Customer", ["name"])).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
+  it("allows object rows without name when name was not requested", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [{ count: 1 }] })));
+    await expect(frappeList(PROPS, "Example", ["count"])).resolves.toEqual([{ count: 1 }]);
+  });
+
+  it.each([null, [], "Customer", 1])("rejects malformed document data: %j", async (data) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data })));
+    await expect(frappeGet(PROPS, "Customer", "CUS-001")).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
   it("aborts a stalled request and preserves a structured timeout error", async () => {
     vi.useFakeTimers();
     vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise((_resolve, reject) => {
@@ -58,10 +88,57 @@ describe("Frappe REST client", () => {
     await expect(result).rejects.not.toThrow("private upstream body");
   });
 
+  it("maps a permission failure safely and cancels its unread body", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("private permission detail")); },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 403 })));
+
+    const result = frappeList(PROPS, "Customer", ["name"]);
+    await expect(result).rejects.toThrow("PERMISSION_DENIED");
+    await expect(result).rejects.not.toThrow("private permission detail");
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
   it("rejects unfinished reports instead of reporting zero", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: { prepared_report: true } })));
     await expect(frappeRunReport(PROPS, "Accounts Payable", {})).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
   });
+
+  it.each([null, [], "total", 1])("rejects a malformed report row: %j", async (row) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: { result: [row] } })));
+    await expect(frappeRunReport(PROPS, "Accounts Payable", {})).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
+  it("normalises a Frappe array total row using the report columns", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: {
+      columns: [{ fieldname: "party" }, { fieldname: "outstanding" }],
+      add_total_row: 1,
+      result: [
+        { party: "SUP-001", voucher_no: "PINV-001", outstanding: 125 },
+        ["Total", 125],
+      ],
+    } })));
+
+    await expect(frappeRunReport(PROPS, "Accounts Payable", {})).resolves.toMatchObject({
+      result: [
+        { party: "SUP-001", voucher_no: "PINV-001", outstanding: 125 },
+        { party: "Total", outstanding: 125, is_total_row: true },
+      ],
+    });
+  });
+
+  it.each([
+    ["missing columns", undefined, ["Total"]],
+    ["missing fieldname", [{}], ["Total"]],
+    ["too many values", [{ fieldname: "party" }], ["Total", 125]],
+  ])("rejects an array report row with %s", async (_label, columns, row) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: { columns, result: [row] } })));
+    await expect(frappeRunReport(PROPS, "Accounts Payable", {})).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
   it("uses the user bearer token and bounded list parameters", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ data: [{ name: "Example" }] }), {
@@ -164,6 +241,94 @@ describe("Frappe REST client", () => {
     const body = init.body as URLSearchParams;
     expect(body.get("grant_type")).toBe("refresh_token");
     expect(body.get("client_secret")).toBe("client-secret");
+    expect(init.redirect).toBe("error");
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.headers).not.toHaveProperty("Authorization");
+  });
+
+  it("aborts a stalled OAuth refresh within the remaining request budget", async () => {
+    vi.useFakeTimers();
+    const aborted = vi.fn();
+    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => {
+        aborted();
+        reject(new DOMException("Aborted", "AbortError"));
+      });
+    })));
+    const result = ensureFreshToken({
+      ...PROPS,
+      upstreamExpiresAt: Date.now() - 1,
+      requestDeadline: Date.now() + 2_000,
+    });
+    const check = expect(result).rejects.toThrow("UPSTREAM_TIMEOUT");
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await check;
+    expect(aborted).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["invalid JSON", "<html>private failure</html>"],
+    ["null body", "null"],
+    ["missing token", "{}"],
+    ["empty token", "{\"access_token\":\"\"}"],
+    ["padded access token", "{\"access_token\":\" new-token \"}"],
+    ["empty refresh token", "{\"access_token\":\"new-token\",\"refresh_token\":\"\"}"],
+    ["padded refresh token", "{\"access_token\":\"new-token\",\"refresh_token\":\" new-refresh \"}"],
+    ["invalid expiry", "{\"access_token\":\"new-token\",\"expires_in\":{}}"],
+  ])("rejects a malformed OAuth token response with an %s", async (_label, body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+    const result = ensureFreshToken({ ...PROPS, upstreamExpiresAt: Date.now() - 1 });
+    await expect(result).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+    await expect(result).rejects.not.toThrow("private failure");
+  });
+
+  it("cancels an oversized OAuth token body", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) { controller.enqueue(new Uint8Array(8 * 1024 * 1024 + 1)); },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
+
+    await expect(ensureFreshToken({ ...PROPS, upstreamExpiresAt: Date.now() - 1 })).rejects.toThrow("RESULT_TOO_LARGE");
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("does not read or expose an OAuth permission error body", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) { controller.enqueue(new TextEncoder().encode("private OAuth detail")); },
+      cancel,
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 403 })));
+
+    const result = ensureFreshToken({ ...PROPS, upstreamExpiresAt: Date.now() - 1 });
+    await expect(result).rejects.toThrow("AUTHENTICATION_REQUIRED");
+    await expect(result).rejects.not.toThrow("private OAuth detail");
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it("uses bounded OAuth code exchange without sending an authorization header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ access_token: "new-token", expires_in: 1800 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(exchangeFrappeCode({
+      baseUrl: PROPS.baseUrl,
+      clientId: PROPS.upstreamClientId,
+      clientSecret: PROPS.upstreamClientSecret,
+      code: "authorization-code",
+      codeVerifier: "code-verifier",
+      redirectUri: "https://gateway.example.com/oauth/frappe/callback",
+    })).resolves.toMatchObject({ access_token: "new-token" });
+
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    expect(init.headers).not.toHaveProperty("Authorization");
+    const body = init.body as URLSearchParams;
+    expect(body.get("grant_type")).toBe("authorization_code");
+    expect(body.get("code_verifier")).toBe("code-verifier");
   });
 
   it("does not refresh a Frappe API token", async () => {

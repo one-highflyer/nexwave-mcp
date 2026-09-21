@@ -402,8 +402,9 @@ function hasUpstreamAuthentication(props: NexWaveAuthProps): boolean {
 }
 
 async function currentProps(): Promise<NexWaveAuthProps> {
-  const props = await ensureFreshToken(getAuthProps());
-  return { ...props, requestDeadline: Date.now() + (props.authType === "api_token" ? UPSTREAM_TIMEOUT_MS : 30_000) };
+  const props = getAuthProps();
+  const requestDeadline = Date.now() + (props.authType === "api_token" ? UPSTREAM_TIMEOUT_MS : 30_000);
+  return ensureFreshToken({ ...props, requestDeadline });
 }
 
 function registerLookupTool(
@@ -476,7 +477,7 @@ function registerLookupTool(
       );
       if (sortBy === "base_grand_total") {
         const company = await frappeGet<{ default_currency: string }>(props, "Company", String(args.company));
-        if (!company.default_currency) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
+        if (typeof company.default_currency !== "string" || !company.default_currency.trim()) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
         result.structuredContent = { ...result.structuredContent, ranking: { field: sortBy, currency: company.default_currency, company: args.company } };
       }
       return result;

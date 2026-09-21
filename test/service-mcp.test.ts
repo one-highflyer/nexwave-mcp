@@ -264,6 +264,64 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(body.get("filters")!)).toMatchObject({ fiscal_year: "FY-2026", from_date: "2026-04-01", to_date: "2026-09-21" });
   });
 
+  it.each([12, { code: "NZD" }, null, "", "   "])("rejects invalid company currency %j in monetary flows", async (currency) => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      if (url.pathname.includes("/Company/")) return Response.json({ data: { name: "Example Company", default_currency: currency } });
+      if (url.pathname.endsWith("/Supplier")) return Response.json({ data: [{ name: "SUP-001", supplier_name: "Example" }] });
+      if (url.pathname.includes("/api/resource/")) return Response.json({ data: [{ name: "INV-001" }] });
+      return Response.json({ message: { result: [] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    for (const [name, args] of [
+      ["get_party_balance", { company: "Example Company", party_type: "Supplier", party_id: "SUP-001", report_date: "2026-09-21" }],
+      ["get_accounts_payable_summary", { company: "Example Company", report_date: "2026-09-21" }],
+      ["get_sales_summary", { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-21", group_by: "customer" }],
+      ["list_sales_invoices", { company: "Example Company", sort_by: "base_grand_total" }],
+    ] as Array<[string, Record<string, unknown>]>) {
+      const result = await invokeTool(name, args);
+      expect(result.isError, name).toBe(true);
+      expect(result.content[0].text, name).toContain("UPSTREAM_INVALID_RESPONSE");
+    }
+  });
+
+  it.each([null, {}, { name: "   " }])("never runs a party report after a malformed exact lookup %j", async (row) => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [row] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("get_party_balance", { company: "Example Company", party_type: "Supplier", party_id: "SUP-001", report_date: "2026-09-21" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("UPSTREAM_INVALID_RESPONSE");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("accepts real Frappe array totals without double-counting the sales summary", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      if (new URL(input).pathname.includes("/Company/")) return Response.json({ data: { default_currency: "NZD" } });
+      return Response.json({ message: {
+        columns: ["invoice", "customer", "amount"].map((fieldname) => ({ fieldname })),
+        result: [{ invoice: "INV-001", customer: "C-001", amount: 100 }, ["Total", "Total", 100]],
+        add_total_row: true,
+      } });
+    }));
+    const result = await invokeTool("get_sales_summary", { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-21", group_by: "customer" });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ total_net_sales: 100, line_count: 1, group_count: 1 });
+  });
+
+  it("accepts real Frappe array totals in the payable summary", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => {
+      if (new URL(input).pathname.includes("/Company/")) return Response.json({ data: { default_currency: "NZD" } });
+      return Response.json({ message: {
+        columns: ["party", "voucher_no", "outstanding"].map((fieldname) => ({ fieldname })),
+        result: [{ party: "SUP-001", voucher_no: "INV-001", outstanding: 100, posting_date: "2026-09-01" }, ["Total", "Total", 100]],
+        add_total_row: true,
+      } });
+    }));
+    const result = await invokeTool("get_accounts_payable_summary", { company: "Example Company", report_date: "2026-09-21" });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ totals: { outstanding: 100 }, document_count: 1 });
+  });
+
   it("returns structured metadata while preserving legacy list text", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [{ name: "SUP-001", supplier_name: "Example Supplier" }] })));
     const result = await invokeTool("list_suppliers", { search: "Example Supplier" });

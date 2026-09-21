@@ -25,10 +25,12 @@ export function registerInsightTools(server: McpServer, getProps: () => Promise<
     const filters = { company, from_date, to_date, ...(customer ? { customer } : {}) };
     const [report, companyRecord] = await Promise.all([
       frappeRunReport(props, "Item-wise Sales Register", filters),
-      frappeGet<{ default_currency: string }>(props, "Company", company),
+      frappeGet<{ default_currency?: unknown }>(props, "Company", company),
     ]);
-    if (!companyRecord.default_currency) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
-    return structuredResult({ company, from_date, to_date, currency: companyRecord.default_currency, ...summariseSales(report, group_by, limit) });
+    if (typeof companyRecord.default_currency !== "string" || !companyRecord.default_currency.trim()) {
+      throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
+    }
+    return structuredResult({ company, from_date, to_date, currency: companyRecord.default_currency.trim(), ...summariseSales(report, group_by, limit) });
   });
 
   server.registerTool("get_stock_risk", {
@@ -54,11 +56,12 @@ export function summariseSales(data: FrappeReportResult, groupBy: "customer" | "
   const groups = new Map<string, { name: string; label: string; net_sales: number }>();
   let lineCount = 0;
   for (const row of data.result ?? []) {
+    if (row.is_total_row === true) continue;
     // The standard report's total row has no invoice ID.
     if (typeof row.invoice !== "string" || !row.invoice.trim()) continue;
     const field = groupBy === "item" ? "item_code" : groupBy === "month" ? "posting_date" : groupBy;
-    const rawName = row[field] || (groupBy === "item" ? row.item_name : undefined);
-    if (typeof rawName !== "string" || !rawName || typeof row.amount !== "number" || !Number.isFinite(row.amount)) {
+    const rawName = row[field];
+    if (typeof rawName !== "string" || !rawName.trim() || typeof row.amount !== "number" || !Number.isFinite(row.amount)) {
       throw new ToolError("UPSTREAM_INVALID_RESPONSE", "Sales rows cannot be grouped safely. No total can be confirmed.");
     }
     if (groupBy === "month") validateDateRange(rawName, rawName);
@@ -70,11 +73,13 @@ export function summariseSales(data: FrappeReportResult, groupBy: "customer" | "
     lineCount++;
   }
   if ((data.result?.length ?? 0) > 0 && !lineCount) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The sales report did not contain recognisable invoice rows.");
-  const rows = [...groups.values()].map((row) => ({ ...row, net_sales: round(row.net_sales) }));
-  rows.sort((a, b) => groupBy === "month" ? a.name.localeCompare(b.name) : b.net_sales - a.net_sales);
+  const unroundedRows = [...groups.values()];
+  const totalNetSales = round(unroundedRows.reduce((sum, row) => sum + row.net_sales, 0));
+  unroundedRows.sort((a, b) => groupBy === "month" ? a.name.localeCompare(b.name) : b.net_sales - a.net_sales);
+  const rows = unroundedRows.map((row) => ({ ...row, net_sales: round(row.net_sales) }));
   return {
     group_by: groupBy, basis: "Submitted invoice net amounts in company currency; returns included; tax excluded.",
-    total_net_sales: round(rows.reduce((sum, row) => sum + row.net_sales, 0)),
+    total_net_sales: totalNetSales,
     groups: rows.slice(0, limit), group_count: rows.length, line_count: lineCount,
     truncated: rows.length > limit, totals_complete: true,
   };
@@ -85,11 +90,13 @@ export function summariseStockRisk(data: FrappeReportResult, limit: number, thre
   let unknown = 0;
   const risks: Array<Record<string, unknown>> = [];
   for (const row of data.result ?? []) {
+    if (row.is_total_row === true) continue;
     if (typeof row.item_code !== "string" || typeof row.warehouse !== "string" || !row.warehouse) continue;
     if (![row.actual_qty, row.projected_qty, row.re_order_level, row.re_order_qty].every((value) => typeof value === "number" && Number.isFinite(value))) {
       throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The stock report lacks valid quantities or reorder settings.");
     }
     checked++;
+    // ERPNext treats either a reorder level or reorder quantity as a configured rule.
     const configured = threshold !== undefined || row.re_order_level !== 0 || row.re_order_qty !== 0;
     if (!configured) { unknown++; continue; }
     const quantity = Number(threshold === undefined ? row.projected_qty : row.actual_qty);

@@ -79,7 +79,7 @@ async function partySummary(
     frappeRunReport(props, report, filters),
     frappeGet<{ default_currency?: string }>(props, "Company", company),
   ]);
-  if (!companyRecord.default_currency) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
+  if (typeof companyRecord.default_currency !== "string" || !companyRecord.default_currency.trim()) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
   return { report, company, report_date: reportDate, ...summarisePartyBalances(data, companyRecord.default_currency, reportDate, limit) };
 }
 
@@ -88,6 +88,7 @@ export function summarisePartyBalances(data: FrappeReportResult, currency: strin
   let invoiceCount = 0;
   // group_by_party=0: only document rows can contribute, never report totals.
   for (const row of data.result ?? []) {
+    if (row.is_total_row === true) continue;
     if (typeof row.party !== "string" || typeof row.voucher_no !== "string" || !row.voucher_no.trim()) continue;
     if (typeof row.outstanding !== "number" || !Number.isFinite(row.outstanding)) {
       throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The report contains an invalid balance. No total can be confirmed.");
