@@ -104,4 +104,36 @@ describe("report tool output", () => {
     expect(result.top_customers[0]).toMatchObject({ customer: "Total", outstanding: 50 });
     expect(result.totals.outstanding).toBe(50);
   });
+
+  it.each([
+    { result: [{ unexpected: "payload" }] },
+    { result: [{ party: "C-001", voucher_no: "INV-001", outstanding: "100" }] },
+    { result: [{ party: "C-001", voucher_no: "INV-001", outstanding: 100, range1: "100" }] },
+    { result: [{}] },
+  ])("rejects malformed receivable rows instead of asserting zero", (data) => {
+    expect(() => normaliseAgeingSummary("Accounts Receivable", {}, data, [30, 60, 90, 120], 5)).toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
+  it("separates document credits within the same customer without double-counting subtotals", () => {
+    const result = normaliseAgeingSummary("Accounts Receivable", {}, { result: [
+      { party: "C-001", voucher_no: "INV-001", outstanding: 100 },
+      { party: "C-001", voucher_no: "PAY-001", outstanding: -25 },
+      { party: "C-001", bold: 1, outstanding: 75 },
+      {},
+      { party: "Total", bold: 1, outstanding: 75 },
+    ] }, [30, 60, 90, 120], 5);
+    expect(result).toMatchObject({ credit_breakdown_complete: true, totals: { outstanding: 75, positive_outstanding: 100, credit_balance: 25 } });
+  });
+
+  it("does not invent a credit breakdown from incomplete detail rows", () => {
+    const result = normaliseAgeingSummary("Accounts Receivable", {}, { result: [
+      { party: "C-001", voucher_no: "INV-001", outstanding: 100 },
+      { party: "C-001", bold: 1, outstanding: 75 },
+      { party: "Total", bold: 1, outstanding: 75 },
+    ] }, [30, 60, 90, 120], 5);
+    expect(result.credit_breakdown_complete).toBe(false);
+    expect(result.totals.outstanding).toBe(75);
+    expect(result.totals).not.toHaveProperty("positive_outstanding");
+    expect(result.totals).not.toHaveProperty("credit_balance");
+  });
 });

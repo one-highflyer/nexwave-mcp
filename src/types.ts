@@ -28,6 +28,8 @@ export interface SiteRecord {
 }
 
 interface NexWaveAuthPropsBase {
+  /** Per-tool deadline, created after authentication; never stored in site configuration. */
+  requestDeadline?: number;
   siteId: string;
   siteName: string;
   baseUrl: string;

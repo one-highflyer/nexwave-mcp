@@ -138,10 +138,34 @@ All tools are read-only. List results and report output are bounded to keep MCP 
 | `get_trial_balance` | Trial Balance |
 | `get_general_ledger` | General Ledger |
 | `get_accounts_receivable` | Accounts Receivable |
+| `get_accounts_receivable_summary` | Accounts Receivable totals and top customer balances |
 | `get_accounts_payable` | Accounts Payable |
 | `get_bank_reconciliation_statement` | Bank Reconciliation Statement |
 
 Report names and filters are allowlisted. Detailed reports have date-range limits and all report responses have row limits.
+
+### Search and voice queries
+
+Directory tools search record IDs and display names. If the full phrase has no exact match, they make one bounded token search and compare normalized names, including common legal suffixes for companies and parties. Fallbacks preserve explicit filters and permissions. Partial or ambiguous names require confirmation. Empty search strings and the existing text-array list responses remain supported; `structuredContent` adds match status, candidates, and truncation metadata.
+
+Invoice and order tools accept `customer_query` or `supplier_query` for spoken names. Exact `customer` and `supplier` filters must use confirmed record IDs. Do not combine a spoken query and its exact filter. `search` is document text, not an unrestricted filter language. SQL wildcard characters in text are escaped.
+
+Use `unpaid_only: true` for submitted positive invoice balances, including partly paid and overdue invoices. Use `overdue_as_of` for due dates strictly before a date. Neither can be combined with `status`. Purchase orders support `pending_receipt: true` for submitted, open orders with less than 100 percent received. List tools expose bounded, allowlisted sorting; monetary invoice/order ranking uses `base_grand_total` with one company, or a native amount with an explicit `currency` filter.
+
+| Tool | Purpose |
+| --- | --- |
+| `get_party_balance` | Resolve a spoken customer/supplier name and return its company-currency balance; use `party_id` after confirming a candidate |
+| `get_accounts_payable_summary` | Complete payable totals, credits, overdue balances and top parties |
+| `get_sales_summary` | Net invoice sales by customer, item, item group or month, calculated before limiting displayed groups |
+| `get_stock_risk` | Partial stock check against per-warehouse reorder settings, with explicit missing-setting and coverage warnings |
+
+Date-range reports accept either the existing explicit `from_date`/`to_date` pair or `period` plus `as_of_date` (the user's current local calendar date). Presets are `current_fiscal_year`, `last_month`, and `last_90_days`. Fiscal years are resolved by NexWave for the specified company. Do not mix presets with explicit dates. Ledger and sales-summary ranges remain bounded to 366 days.
+
+Tool execution shares an eight-second upstream budget for service-token clients and a thirty-second budget for OAuth clients. Responses are bounded to 8 MiB. Upstream timeouts, invalid JSON, permission failures and oversized results return safe MCP errors; none mean that no records exist. There is no automatic transport retry. Authentication routes, stored credentials and null-argument normalization are unchanged. No database migration is needed.
+
+The stock-risk report covers existing item/warehouse stock rows only. It does not implement missing-Bin replenishment, warehouse-group reorder rules, demand forecasts or lead-time forecasts. A zero returned risk count is not evidence that all stock is safe.
+
+The deployment-ready [voice prompt](docs/voice-agent-prompt.md) and [evaluation cases](docs/voice-evaluation.md) describe the intended client behavior. Deploy the MCP changes, refresh the client's tool catalogue, and then publish the updated voice configuration. Keep all existing tools selected.
 
 ## Local development
 

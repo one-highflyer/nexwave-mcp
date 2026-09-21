@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { frappeRunReport, type FrappeReportResult } from "./frappe";
+import { frappeFiscalYear, frappeRunReport, type FrappeReportResult } from "./frappe";
+import { PERIOD_SCHEMA, resolveReportPeriod } from "./report-period";
+import { ToolError } from "./tool-result";
 import type { NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
@@ -33,8 +35,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Stock Balance report for a company and date range.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         item_codes: NAMES,
         warehouses: NAMES,
         item_group: NAME.optional(),
@@ -42,10 +43,12 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, item_codes, warehouses, item_group, include_zero_stock_items, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, include_zero_stock_items, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date);
       return runReport(
-        getProps,
+        async () => props,
         "Stock Balance",
         {
           company,
@@ -69,8 +72,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Stock Ledger report. Detailed report ranges are limited to 366 days.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         item_codes: NAMES,
         warehouses: NAMES,
         item_group: NAME.optional(),
@@ -80,10 +82,12 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, item_codes, warehouses, item_group, batch_no, voucher_no, project, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, batch_no, voucher_no, project, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
       return runReport(
-        getProps,
+        async () => props,
         "Stock Ledger",
         {
           company,
@@ -109,8 +113,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Profit and Loss Statement for a date range.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         periodicity: PERIODICITY.default("Yearly"),
         cost_centres: NAMES,
         projects: NAMES,
@@ -118,10 +121,12 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, periodicity, cost_centres, projects, presentation_currency, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, periodicity, cost_centres, projects, presentation_currency, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date);
       return runReport(
-        getProps,
+        async () => props,
         "Profit and Loss Statement",
         {
           company,
@@ -148,9 +153,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave Trial Balance for one fiscal year and date range.",
       inputSchema: {
         company: NAME,
-        fiscal_year: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        fiscal_year: NAME.optional(),
+        ...PERIOD_SCHEMA,
         cost_centres: NAMES,
         projects: NAMES,
         finance_book: NAME.optional(),
@@ -158,10 +162,18 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, fiscal_year, from_date, to_date, cost_centres, projects, finance_book, presentation_currency, limit }) => {
+    async ({ company, fiscal_year: fiscalYear, from_date: from, to_date: to, period, as_of_date, cost_centres, projects, finance_book, presentation_currency, limit }) => {
+      const props = await getProps();
+      const dates = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
+      const { from_date, to_date } = dates;
       validateDateRange(from_date, to_date);
+      const fiscal = await frappeFiscalYear(props, company, to_date, fiscalYear ?? dates.fiscal_year);
+      if (from_date < fiscal.from_date || to_date > fiscal.to_date) {
+        throw new ToolError("INVALID_ARGUMENT", "Trial Balance requires both dates within the selected fiscal year. Choose a range within that year, or request separate reports for each fiscal year. Dates were not changed and no report was run.");
+      }
+      const fiscal_year = fiscal.name;
       return runReport(
-        getProps,
+        async () => props,
         "Trial Balance",
         {
           company,
@@ -190,8 +202,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       description: "Run the standard NexWave General Ledger report. Detailed report ranges are limited to 366 days.",
       inputSchema: {
         company: NAME,
-        from_date: DATE,
-        to_date: DATE,
+        ...PERIOD_SCHEMA,
         accounts: NAMES,
         party_type: z.enum(["Customer", "Supplier", "Employee"]).optional(),
         parties: NAMES,
@@ -203,7 +214,9 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         limit: REPORT_LIMIT,
       },
     },
-    async ({ company, from_date, to_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit }) => {
+      const props = await getProps();
+      const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
       const groupBy = {
         voucher: "Categorize by Voucher",
@@ -212,7 +225,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         party: "Categorize by Party",
       }[group_by];
       return runReport(
-        getProps,
+        async () => props,
         "General Ledger",
         {
           company,
@@ -440,7 +453,8 @@ export function normaliseAgeingSummary(
   ageingRanges: number[],
   limit: number,
 ) {
-  const allRows = (data.result ?? []).filter(isRecord);
+  const allRows = (data.result ?? []).filter((row) => isRecord(row) && row.is_total_row !== true);
+  validateAgeingRows(allRows);
   const totalRow = [...allRows].reverse().find(isAgeingTotalRow);
   const groupedRows = allRows.filter((row) => row !== totalRow && isGroupedPartyRow(row));
   const partyRows = groupedRows.length > 0 ? groupedRows : aggregatePartyRows(allRows, totalRow);
@@ -454,9 +468,22 @@ export function normaliseAgeingSummary(
     ageing: ageingBuckets(row, ageingRanges),
   }));
 
+  const totals = summariseAgeingTotals(totalRow ?? sumAgeingRows(partyRows), ageingRanges);
+  const documents = allRows.filter((row) => typeof row.voucher_no === "string" && row.voucher_no.trim());
+  const documentTotal = documents.reduce((sum, row) => sum + numericValue(row.outstanding), 0);
+  const creditBreakdownComplete = allRows.length === 0
+    || (documents.length > 0 && Math.abs(documentTotal - totals.outstanding) < 0.000001);
+  const round = (value: number) => Math.round(value * 1e6) / 1e6;
   return {
     report,
-    totals: summariseAgeingTotals(totalRow ?? sumAgeingRows(partyRows), ageingRanges),
+    totals: {
+      ...totals,
+      ...(creditBreakdownComplete ? {
+        positive_outstanding: round(documents.reduce((sum, row) => sum + Math.max(0, numericValue(row.outstanding)), 0)),
+        credit_balance: round(documents.reduce((sum, row) => sum + Math.max(0, -numericValue(row.outstanding)), 0)),
+      } : {}),
+    },
+    credit_breakdown_complete: creditBreakdownComplete,
     top_customers: topCustomers,
     customer_count: partyRows.length,
     invoice_count: allRows.filter((row) => typeof row.voucher_no === "string" && row.voucher_no.trim()).length,
@@ -469,17 +496,17 @@ export function normaliseAgeingSummary(
 export function validateDateRange(fromDate: string, toDate: string, maxDays?: number): void {
   const from = parseDate(fromDate);
   const to = parseDate(toDate);
-  if (from > to) throw new Error("From date must be on or before to date.");
+  if (from > to) throw new ToolError("INVALID_ARGUMENT", "From date must be on or before to date.");
   const dayCount = Math.floor((to.getTime() - from.getTime()) / 86_400_000) + 1;
   if (maxDays && dayCount > maxDays) {
-    throw new Error(`This detailed report supports a maximum date range of ${maxDays} days.`);
+    throw new ToolError("INVALID_ARGUMENT", `This detailed report supports a maximum date range of ${maxDays} days.`);
   }
 }
 
 function parseDate(value: string): Date {
   const parsed = new Date(`${value}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== value) {
-    throw new Error("Use valid dates in YYYY-MM-DD format.");
+    throw new ToolError("INVALID_ARGUMENT", "Use valid dates in YYYY-MM-DD format.");
   }
   return parsed;
 }
@@ -487,7 +514,7 @@ function parseDate(value: string): Date {
 function validateAgeingRanges(values: number[]): void {
   for (let index = 1; index < values.length; index += 1) {
     if (values[index] <= values[index - 1]) {
-      throw new Error("Ageing ranges must be in ascending order without duplicates.");
+      throw new ToolError("INVALID_ARGUMENT", "Ageing ranges must be in ascending order without duplicates.");
     }
   }
 }
@@ -518,7 +545,26 @@ function sanitiseSummary(summary: Record<string, unknown>): Record<string, unkno
 }
 
 function isAgeingTotalRow(row: Record<string, unknown>): boolean {
-  return typeof row.party === "string" && cleanText(row.party).toLowerCase() === "total";
+  return typeof row.party === "string" && cleanText(row.party).toLowerCase() === "total"
+    && !(typeof row.voucher_no === "string" && row.voucher_no.trim());
+}
+
+function validateAgeingRows(rows: Array<Record<string, unknown>>): void {
+  const amountFields = ["invoiced", "paid", "credit_note", "outstanding", "range1", "range2", "range3", "range4", "range5", "range6", "range7"];
+  let financialRows = 0;
+  for (const row of rows) {
+    // ERPNext inserts empty spacer rows between party groups.
+    if (Object.values(row).every((value) => value === null || value === undefined || value === "")) continue;
+    if (typeof row.party !== "string" || !row.party.trim()
+      || !(row.bold === 1 || (typeof row.voucher_no === "string" && row.voucher_no.trim()))
+      || typeof row.outstanding !== "number" || !Number.isFinite(row.outstanding)
+      || amountFields.some((field) => row[field] !== undefined && row[field] !== null
+        && (typeof row[field] !== "number" || !Number.isFinite(row[field])))) {
+      throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The receivables report contains invalid financial rows. No balance can be confirmed.");
+    }
+    financialRows++;
+  }
+  if (rows.length && !financialRows) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The receivables report contains no recognisable financial rows. No zero balance can be inferred.");
 }
 
 function isGroupedPartyRow(row: Record<string, unknown>): boolean {
