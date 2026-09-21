@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { createNexWaveServer } from "../src/mcp";
 
 describe("MCP tool catalogue", () => {
-  it("registers invoice, payment, bank transaction, and bank reconciliation tools", () => {
+  it("registers order, invoice, payment, bank transaction, and bank reconciliation tools", () => {
     const server = createNexWaveServer();
 
     for (const name of [
       "list_sales_invoices",
       "list_purchase_invoices",
+      "list_purchase_orders",
       "list_payments",
       "list_bank_transactions",
       "get_bank_reconciliation_statement",
@@ -41,6 +42,7 @@ describe("MCP tool catalogue", () => {
       "list_fiscal_years",
       "list_sales_invoices",
       "list_purchase_invoices",
+      "list_purchase_orders",
       "list_payments",
       "list_bank_transactions",
       "list_sales_orders",
