@@ -11,6 +11,127 @@ const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("voice workflows through the public service MCP endpoint", () => {
+  it.each([
+    ["list_sales_invoices", { customer_query: "Example Retail", unpaid_only: true, status: "Submitted" }],
+    ["list_purchase_invoices", { supplier_query: "Example Office", unpaid_only: true, status: "Paid" }],
+    ["list_sales_invoices", { customer_query: "Example Retail", overdue_as_of: "2026-06-30", status: "Unpaid" }],
+    ["list_purchase_invoices", { supplier_query: "Example Office", overdue_as_of: "2026-06-30", docstatus: 0 }],
+    ["list_sales_orders", { customer_query: "Example Retail", pending_delivery: true, status: "To Deliver" }],
+    ["list_purchase_orders", { supplier_query: "Example Office", pending_receipt: true, status: "To Receive" }],
+    ["list_sales_orders", { customer_query: "Example Retail", status: "To Receive" }],
+    ["list_purchase_orders", { supplier_query: "Example Office", status: "To Deliver" }],
+    ["list_sales_invoices", { customer_query: "Example Retail", status: "Debit Note Issued" }],
+    ["list_purchase_invoices", { supplier_query: "Example Office", status: "Credit Note Issued" }],
+    ["list_sales_orders", { customer_query: "Example Retail", delivery_from_date: "2026-06-30", delivery_to_date: "2026-06-01" }],
+    ["list_purchase_orders", { supplier_query: "Example Office", from_date: "2026-02-30" }],
+    ["list_sales_invoices", { customer_query: "Example Retail", sort_by: "grand_total" }],
+    ["list_purchase_invoices", { supplier_query: "Example Office", sort_by: "base_grand_total" }],
+  ] as const)("rejects invalid %s filters before any upstream call: %j", async (tool, args) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, args);
+    expect(result.isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["list_sales_invoices", "Sales Invoice", "customer", "CUS-001"],
+    ["list_purchase_invoices", "Purchase Invoice", "supplier", "SUP-001"],
+  ])("accepts All, null and omitted status for %s without narrowing unpaid invoices", async (tool, doctype, party, id) => {
+    for (const status of ["All", null, undefined]) {
+      const fetchMock = vi.fn(async (_input: string) => Response.json({ data: [{ name: "INV-001" }] }));
+      vi.stubGlobal("fetch", fetchMock);
+      const result = await invokeTool(tool, { company: "Example Company", [party]: id, status, unpaid_only: true, docstatus: 1 });
+      expect(result.isError).not.toBe(true);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const filters = JSON.parse(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("filters")!);
+      expect(filters).toContainEqual([doctype, "outstanding_amount", ">", 0]);
+      expect(filters).toContainEqual([doctype, "docstatus", "=", 1]);
+      expect(filters.some((f: unknown[]) => f[1] === "status")).toBe(false);
+    }
+  });
+
+  it.each([
+    ["list_sales_orders", "Sales Order", "customer", "Customer", "CUS-001", "pending_delivery", "delivery_date"],
+    ["list_purchase_orders", "Purchase Order", "supplier", "Supplier", "SUP-001", "pending_receipt", "schedule_date"],
+  ])("resolves the party and filters expected delivery dates for %s", async (tool, doctype, party, partyType, id, pending, deliveryField) => {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      if (url.pathname.endsWith(`/${partyType}`)) return Response.json({ data: [{ name: id, [`${party}_name`]: "Example Office" }] });
+      return Response.json({ data: [{ name: "ORDER-001" }] });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, {
+      company: "Example Company", [`${party}_query`]: "Example Office", status: "All", [pending]: true,
+      delivery_from_date: "2026-06-01", delivery_to_date: "2026-06-30", sort_by: deliveryField, sort_order: "asc",
+    });
+    expect(result.isError).not.toBe(true);
+    const url = new URL(String(fetchMock.mock.calls.at(-1)?.[0]));
+    expect(url.searchParams.get("order_by")).toBe(`${deliveryField} asc`);
+    const filters = JSON.parse(url.searchParams.get("filters")!);
+    expect(filters).toEqual(expect.arrayContaining([
+      [doctype, party, "=", id], [doctype, deliveryField, ">=", "2026-06-01"], [doctype, deliveryField, "<=", "2026-06-30"],
+      [doctype, "docstatus", "=", 1],
+    ]));
+    expect(filters.some((f: unknown[]) => f[1] === "transaction_date" || f[1] === "status" && f[2] === "=")).toBe(false);
+  });
+
+  it.each(["list_projects", "list_payments", "list_bank_transactions"])("treats All as no status filter for %s", async (tool) => {
+    const fetchMock = vi.fn(async (_input: string) => Response.json({ data: [{ name: "RECORD-001" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, { company: "Example Company", status: "All" });
+    expect(result.isError).not.toBe(true);
+    const filters = JSON.parse(new URL(fetchMock.mock.calls[0][0]).searchParams.get("filters")!);
+    expect(filters.some((f: unknown[]) => f[1] === "status")).toBe(false);
+  });
+
+  it.each([
+    ["list_sales_orders", "pending_delivery"], ["list_purchase_orders", "pending_receipt"],
+  ])("discloses header-date scope even for empty %s delivery results", async (tool, pending) => {
+    for (const rows of [[], [{ name: "ORDER-001" }]]) {
+      vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: rows })));
+      for (const filters of [{ [pending]: true }, { delivery_from_date: "2026-06-01" }, { overdue_as_of: "2026-06-30" }]) {
+        const result = await invokeTool(tool, { company: "Example Company", ...filters });
+        expect(result.isError).not.toBe(true);
+        expect(JSON.parse(result.content[0].text)).toEqual(rows);
+        expect(result.content[1].text).toContain("Even an empty result");
+        expect(result.content[1].text).toContain('"item_delivery_check_complete":false');
+        expect(result.structuredContent).toHaveProperty("delivery_scope.item_delivery_check_complete", false);
+      }
+      const ordinary = await invokeTool(tool, { company: "Example Company", from_date: "2026-06-01", to_date: "2026-06-30" });
+      expect(ordinary.content).toHaveLength(1);
+      expect(JSON.parse(ordinary.content[0].text)).toEqual(rows);
+    }
+  });
+
+  it.each(["get_stock_balance", "get_stock_ledger"])("rejects empty stock scopes and mixed date modes for %s", async (tool) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    for (const scope of [{ item_codes: [] }, { warehouses: [] }, { item_codes: [""] }]) {
+      const result = await invokeTool(tool, { company: "Example Company", period: "current_fiscal_year", as_of_date: "2026-06-30", ...scope });
+      expect(result.isError).toBe(true);
+    }
+    const mixed = await invokeTool(tool, { company: "Example Company", period: "current_fiscal_year", as_of_date: "2026-06-30", from_date: "2026-04-01", to_date: "2026-06-30" });
+    expect(mixed.isError).toBe(true);
+    expect(mixed.content[0].text).toContain("INVALID_ARGUMENT");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["get_stock_balance", "get_stock_ledger"])("preserves exact item and warehouse scope for %s", async (tool) => {
+    const fetchMock = vi.fn(async (_input: string, init: RequestInit) => {
+      const body = new URLSearchParams(String(init.body));
+      expect(JSON.parse(body.get("filters")!)).toMatchObject({
+        company: "Example Company", item_code: ["ITEM-001"], warehouse: ["WH-001"],
+        from_date: "2026-06-01", to_date: "2026-06-30",
+      });
+      return Response.json({ message: { result: [] } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, { company: "Example Company", item_codes: ["ITEM-001"], warehouses: ["WH-001"], from_date: "2026-06-01", to_date: "2026-06-30" });
+    expect(result.isError).not.toBe(true);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("does not let a loose full-phrase hit hide an exact legal-name variant", async () => {
     const fetchMock = vi.fn(async (input: string) => {
       const url = new URL(input);

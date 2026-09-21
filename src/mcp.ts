@@ -8,18 +8,18 @@ import { structuredResult, ToolError } from "./tool-result";
 import { registerPartyTools } from "./party-tools";
 import { registerInsightTools } from "./insight-tools";
 import { normaliseMcpToolArguments } from "./mcp-request";
-import { registerReportTools, validateDateRange } from "./report-tools";
+import { registerReportTools } from "./report-tools";
+import { SALES_INVOICE_STATUS, PURCHASE_INVOICE_STATUS, SALES_ORDER_STATUS, PURCHASE_ORDER_STATUS, DOCSTATUS, ORDER_DATES, statusSchema, dateFilters, invoiceFilters, orderFilters } from "./transaction-filters";
 import type { Env, NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
 const TOOL_REQUEST_TIMEOUT_MS = 30_000;
 const SEARCH = z.string().trim().max(140).optional().describe("Free-text name, partial name, document number or reference spoken by the user. Do not include commands, date phrases or status words. Do not supply SQL wildcards.");
 const EXACT_PARTY = z.string().trim().min(1).max(140).optional().describe("Exact party ID returned by a lookup. Resolve spoken names through the appropriate party lookup or customer_query/supplier_query when available.");
-const INVOICE_STATUS = z.enum(["Draft", "Return", "Credit Note Issued", "Debit Note Issued", "Submitted", "Paid", "Partly Paid", "Unpaid", "Unpaid and Discounted", "Partly Paid and Discounted", "Overdue and Discounted", "Overdue", "Cancelled", "Internal Transfer"]).optional();
-const ORDER_STATUS = z.enum(["Draft", "On Hold", "To Receive and Bill", "To Bill", "To Receive", "Completed", "Cancelled", "Closed", "Delivered", "To Deliver and Bill", "To Deliver"]).optional();
 const INVOICE_FILTERS = {
-  unpaid_only: z.boolean().optional().describe("True means submitted invoices with positive outstanding, including overdue and partly paid invoices. Do not combine with status."),
-  overdue_as_of: DATE.optional().describe("Submitted positive balances with due date before this date. Do not combine with status."),
+  docstatus: DOCSTATUS,
+  unpaid_only: z.boolean().optional().describe("True means submitted invoices with positive outstanding, including overdue and partly paid invoices. Use status All or omit status."),
+  overdue_as_of: DATE.optional().describe("Submitted positive balances with due date before this date. Use status All or omit status. Do not set unpaid_only to false."),
 };
 const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact document currency. Required when ranking native currency amounts.");
 
@@ -186,7 +186,7 @@ export function createNexWaveServer(): McpServer {
     searchFields: ["name", "project_name"],
     extraSchema: {
       company: z.string().trim().min(1).max(140),
-      status: z.enum(["Open", "Completed", "Cancelled"]).optional(),
+      status: statusSchema(["Open", "Completed", "Cancelled"]),
     },
     filters: ({ company, status }) => [
       ["Project", "company", "=", company],
@@ -213,18 +213,18 @@ export function createNexWaveServer(): McpServer {
     extraSchema: {
       company: z.string().trim().min(1).max(140).optional(),
       customer: EXACT_PARTY,
-      status: INVOICE_STATUS,
+      status: SALES_INVOICE_STATUS,
       currency: CURRENCY,
       ...INVOICE_FILTERS,
       from_date: DATE.optional(),
       to_date: DATE.optional(),
     },
-    filters: ({ company, customer, status, from_date, to_date, unpaid_only, overdue_as_of }) => [
+    filters: ({ company, customer, status, from_date, to_date, unpaid_only, overdue_as_of, docstatus }) => [
       ...(company ? [["Sales Invoice", "company", "=", company]] : []),
       ...(customer ? [["Sales Invoice", "customer", "=", customer]] : []),
       ...(status ? [["Sales Invoice", "status", "=", status]] : []),
       ...dateFilters("Sales Invoice", "posting_date", from_date, to_date),
-      ...invoiceFilters("Sales Invoice", { status, unpaid_only, overdue_as_of }),
+      ...invoiceFilters("Sales Invoice", { status, unpaid_only, overdue_as_of, docstatus }),
     ],
     orderBy: "posting_date desc",
     sortFields: ["posting_date", "due_date", "base_grand_total", "grand_total", "outstanding_amount", "name"],
@@ -238,18 +238,18 @@ export function createNexWaveServer(): McpServer {
     extraSchema: {
       company: z.string().trim().min(1).max(140).optional(),
       supplier: EXACT_PARTY,
-      status: INVOICE_STATUS,
+      status: PURCHASE_INVOICE_STATUS,
       currency: CURRENCY,
       ...INVOICE_FILTERS,
       from_date: DATE.optional(),
       to_date: DATE.optional(),
     },
-    filters: ({ company, supplier, status, from_date, to_date, unpaid_only, overdue_as_of }) => [
+    filters: ({ company, supplier, status, from_date, to_date, unpaid_only, overdue_as_of, docstatus }) => [
       ...(company ? [["Purchase Invoice", "company", "=", company]] : []),
       ...(supplier ? [["Purchase Invoice", "supplier", "=", supplier]] : []),
       ...(status ? [["Purchase Invoice", "status", "=", status]] : []),
       ...dateFilters("Purchase Invoice", "posting_date", from_date, to_date),
-      ...invoiceFilters("Purchase Invoice", { status, unpaid_only, overdue_as_of }),
+      ...invoiceFilters("Purchase Invoice", { status, unpaid_only, overdue_as_of, docstatus }),
     ],
     orderBy: "posting_date desc",
     sortFields: ["posting_date", "due_date", "base_grand_total", "grand_total", "outstanding_amount", "name"],
@@ -257,24 +257,23 @@ export function createNexWaveServer(): McpServer {
 
   registerLookupTool(server, "list_purchase_orders", "Purchase Order", {
     party: { doctype: "Supplier", field: "supplier" },
-    description: "List purchase orders visible to the signed-in NexWave user.",
+    description: "List purchase orders visible to the signed-in NexWave user. Order-level records only; item delivery dates and remaining item receipts are not checked.",
     fields: [...READABLE_DOCTYPES["Purchase Order"]],
     searchFields: ["name", "supplier_name"],
     extraSchema: {
       company: z.string().trim().min(1).max(140).optional(),
       supplier: EXACT_PARTY,
-      status: ORDER_STATUS,
+      status: PURCHASE_ORDER_STATUS,
+      docstatus: DOCSTATUS,
       currency: CURRENCY,
-      pending_receipt: z.boolean().optional().describe("Only submitted, open orders with less than 100 percent received."),
-      from_date: DATE.optional(),
-      to_date: DATE.optional(),
+      pending_receipt: z.boolean().optional().describe("Only submitted, open orders with less than 100 percent received. Use status All or omit status to include both To Receive and To Receive and Bill."),
+      ...ORDER_DATES,
     },
-    filters: ({ company, supplier, status, from_date, to_date, pending_receipt }) => [
-      ...(company ? [["Purchase Order", "company", "=", company]] : []),
-      ...(supplier ? [["Purchase Order", "supplier", "=", supplier]] : []),
-      ...(status ? [["Purchase Order", "status", "=", status]] : []),
-      ...dateFilters("Purchase Order", "transaction_date", from_date, to_date),
-      ...(pending_receipt ? [["Purchase Order", "docstatus", "=", 1], ["Purchase Order", "per_received", "<", 100], ["Purchase Order", "status", "not in", ["Closed", "On Hold"]]] : []),
+    filters: (args) => [
+      ...(args.company ? [["Purchase Order", "company", "=", args.company]] : []),
+      ...(args.supplier ? [["Purchase Order", "supplier", "=", args.supplier]] : []),
+      ...(args.status ? [["Purchase Order", "status", "=", args.status]] : []),
+      ...orderFilters("Purchase Order", args),
     ],
     orderBy: "transaction_date desc",
     sortFields: ["transaction_date", "schedule_date", "base_grand_total", "grand_total", "name"],
@@ -289,7 +288,7 @@ export function createNexWaveServer(): McpServer {
       payment_type: z.enum(["Receive", "Pay", "Internal Transfer"]).optional(),
       party_type: z.enum(["Customer", "Supplier", "Employee", "Shareholder"]).optional(),
       party: EXACT_PARTY,
-      status: z.enum(["Draft", "Submitted", "Cancelled"]).optional(),
+      status: statusSchema(["Draft", "Submitted", "Cancelled"]),
       from_date: DATE.optional(),
       to_date: DATE.optional(),
     },
@@ -312,7 +311,7 @@ export function createNexWaveServer(): McpServer {
     extraSchema: {
       company: z.string().trim().min(1).max(140).optional(),
       bank_account: z.string().trim().min(1).max(140).optional(),
-      status: z.enum(["Pending", "Settled", "Unreconciled", "Reconciled", "Cancelled"]).optional(),
+      status: statusSchema(["Pending", "Settled", "Unreconciled", "Reconciled", "Cancelled"]),
       from_date: DATE.optional(),
       to_date: DATE.optional(),
     },
@@ -327,16 +326,21 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_sales_orders", "Sales Order", {
-    description: "Search sales orders by order number or customer, with date, status and company filters.",
+    description: "Search sales orders by order number or customer, with date, status and company filters. Order-level records only; item delivery dates and remaining item deliveries are not checked.",
     fields: [...READABLE_DOCTYPES["Sales Order"]],
     searchFields: ["name", "customer_name"],
     party: { doctype: "Customer", field: "customer" },
-    extraSchema: { company: z.string().trim().min(1).max(140).optional(), customer: EXACT_PARTY, status: ORDER_STATUS, currency: CURRENCY, from_date: DATE.optional(), to_date: DATE.optional() },
-    filters: ({ company, customer, status, from_date, to_date }) => [
-      ...(company ? [["Sales Order", "company", "=", company]] : []),
-      ...(customer ? [["Sales Order", "customer", "=", customer]] : []),
-      ...(status ? [["Sales Order", "status", "=", status]] : []),
-      ...dateFilters("Sales Order", "transaction_date", from_date, to_date),
+    extraSchema: {
+      company: z.string().trim().min(1).max(140).optional(), customer: EXACT_PARTY,
+      status: SALES_ORDER_STATUS, docstatus: DOCSTATUS, currency: CURRENCY,
+      pending_delivery: z.boolean().optional().describe("Only submitted, open orders with less than 100 percent delivered and delivery required. Use status All or omit status to include both To Deliver and To Deliver and Bill."),
+      ...ORDER_DATES,
+    },
+    filters: (args) => [
+      ...(args.company ? [["Sales Order", "company", "=", args.company]] : []),
+      ...(args.customer ? [["Sales Order", "customer", "=", args.customer]] : []),
+      ...(args.status ? [["Sales Order", "status", "=", args.status]] : []),
+      ...orderFilters("Sales Order", args),
     ],
     orderBy: "modified desc",
     sortFields: ["transaction_date", "delivery_date", "base_grand_total", "grand_total", "name"],
@@ -441,22 +445,12 @@ function registerLookupTool(
       },
     },
     async (input) => {
-      const props = await currentProps();
       const args: Record<string, unknown> = { ...input };
-      if (options.party) {
-        const { doctype: partyType, field } = options.party;
-        const query = args[`${field}_query`];
-        if (typeof query === "string") {
-          if (args[field]) throw new ToolError("INVALID_ARGUMENT", `Use ${field}_query or ${field}, not both.`);
-          const found = await searchRecords(props, partyType, ["name", `${field}_name`], ["name", `${field}_name`], {
-            search: query, limit: 5, directory: true, legalNames: true, filters: [[partyType, "disabled", "=", 0]],
-          });
-          if (found.meta.match_status !== "matched") return structuredResult({
-            status: found.meta.match_status, candidates: found.records, truncated: found.meta.truncated,
-            next_action: `Confirm a candidate, then repeat with its exact name in ${field} and omit ${field}_query. No transaction search has been run.`,
-          });
-          args[field] = found.meta.matched_id;
-        }
+      if (args.status === "All") delete args.status;
+      // Reject invalid combinations before token refresh or party lookup can use the deadline.
+      options.filters(args);
+      if (options.party && args[`${options.party.field}_query`] && args[options.party.field]) {
+        throw new ToolError("INVALID_ARGUMENT", `Use ${options.party.field}_query or ${options.party.field}, not both.`);
       }
       const search = typeof input.search === "string" ? input.search : undefined;
       const limit = typeof input.limit === "number" ? input.limit : 20;
@@ -467,6 +461,21 @@ function registerLookupTool(
         throw new ToolError("INVALID_ARGUMENT", "Ranking native amounts requires currency. For invoice or order value across currencies use base_grand_total and company.");
       }
       if (sortBy === "base_grand_total" && !args.company) throw new ToolError("INVALID_ARGUMENT", "Ranking company-currency amounts requires one company.");
+      const props = await currentProps();
+      if (options.party) {
+        const { doctype: partyType, field } = options.party;
+        const query = args[`${field}_query`];
+        if (typeof query === "string") {
+          const found = await searchRecords(props, partyType, ["name", `${field}_name`], ["name", `${field}_name`], {
+            search: query, limit: 5, directory: true, legalNames: true, filters: [[partyType, "disabled", "=", 0]],
+          });
+          if (found.meta.match_status !== "matched") return structuredResult({
+            status: found.meta.match_status, candidates: found.records, truncated: found.meta.truncated,
+            next_action: `Confirm a candidate, then repeat with its exact name in ${field} and omit ${field}_query. No transaction search has been run.`,
+          });
+          args[field] = found.meta.matched_id;
+        }
+      }
       const filters = options.filters(args);
       if (args.currency) filters.push([doctype, "currency", "=", args.currency]);
       const result = await listResult(
@@ -476,6 +485,17 @@ function registerLookupTool(
         options.searchFields,
         { search, limit, filters, orderBy: `${sortBy} ${sortOrder}`, directory: options.directory, legalNames: options.legalNames },
       );
+      if ((doctype === "Sales Order" || doctype === "Purchase Order")
+        && (args.pending_receipt || args.pending_delivery || args.delivery_from_date || args.delivery_to_date || args.overdue_as_of)) {
+        const deliveryScope = {
+          basis: doctype === "Purchase Order" ? "Order header schedule_date (earliest item date)." : "Order header delivery_date (latest item date).",
+          item_delivery_check_complete: false,
+          note: "These are order-level examples. Item delivery dates and item receipt/delivery completion were not checked. Even an empty result cannot establish that there are no overdue item deliveries.",
+        };
+        result.structuredContent = { ...result.structuredContent, delivery_scope: deliveryScope };
+        // Keep the first legacy array unchanged, and make the limit visible to text-only clients too.
+        result.content.push({ type: "text", text: JSON.stringify({ delivery_scope: deliveryScope }) });
+      }
       if (sortBy === "base_grand_total") {
         const company = await frappeGet<{ default_currency: string }>(props, "Company", String(args.company));
         if (typeof company.default_currency !== "string" || !company.default_currency.trim()) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
@@ -484,34 +504,6 @@ function registerLookupTool(
       return result;
     },
   );
-}
-
-function invoiceFilters(doctype: string, input: Record<string, unknown>): unknown[] {
-  if ((input.unpaid_only || input.overdue_as_of) && input.status) {
-    throw new ToolError("INVALID_ARGUMENT", "Use unpaid_only or overdue_as_of without status. Unpaid includes overdue and partly paid invoices.");
-  }
-  if (typeof input.overdue_as_of === "string") validateDateRange(input.overdue_as_of, input.overdue_as_of);
-  return [
-    ...(input.unpaid_only || input.overdue_as_of ? [[doctype, "docstatus", "=", 1], [doctype, "outstanding_amount", ">", 0]] : []),
-    ...(input.overdue_as_of ? [[doctype, "due_date", "<", input.overdue_as_of]] : []),
-  ];
-}
-
-function dateFilters(
-  doctype: string,
-  field: string,
-  fromDate: unknown,
-  toDate: unknown,
-): unknown[] {
-  const from = typeof fromDate === "string" ? fromDate : undefined;
-  const to = typeof toDate === "string" ? toDate : undefined;
-  const start = from ?? to;
-  const end = to ?? from;
-  if (start && end) validateDateRange(start, end);
-  return [
-    ...(from ? [[doctype, field, ">=", from]] : []),
-    ...(to ? [[doctype, field, "<=", to]] : []),
-  ];
 }
 
 function selectFields(

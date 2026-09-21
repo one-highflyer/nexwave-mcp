@@ -112,13 +112,19 @@ try {
     { status: 403, tool: "list_suppliers", args: {}, errorCode: "PERMISSION_DENIED" },
     { status: 404, tool: "get_document", args: { doctype: "Sales Invoice", name: "TEST-MISSING" }, errorCode: "NOT_FOUND" },
     { status: 200, tool: "get_sales_summary", args: { company: "Example Company", group_by: "month", from_date: "2026-01-01", to_date: "2026-09-21", period: "current_fiscal_year", as_of_date: "2026-09-21" }, errorCode: "INVALID_ARGUMENT" },
+    { status: 200, tool: "list_purchase_invoices", args: { supplier_query: "Example", unpaid_only: true, status: "Submitted" }, errorCode: "INVALID_ARGUMENT" },
+    { status: 200, tool: "list_sales_invoices", args: { customer_query: "Example", overdue_as_of: "2026-06-30", status: "Paid" }, errorCode: "INVALID_ARGUMENT" },
+    { status: 200, tool: "list_purchase_orders", args: { supplier_query: "Example", pending_receipt: true, status: "To Receive" }, errorCode: "INVALID_ARGUMENT" },
+    { status: 200, tool: "list_sales_orders", args: { customer_query: "Example", pending_delivery: true, docstatus: 0 }, errorCode: "INVALID_ARGUMENT" },
   ]) {
+    const before = upstreamCalls;
     const response = await mf.dispatchFetch("http://localhost/", { method: "POST", body: JSON.stringify({ operation: "service-mcp", status, tool, args, errorFormat }) });
     assert.equal(response.status, 200);
     assert.match(response.headers.get("Content-Type"), /application\/json/);
     const body = await response.json();
     assert.equal(body.id, 17);
     if (errorCode) {
+      if (errorCode === "INVALID_ARGUMENT") assert.equal(upstreamCalls, before, "Invalid filters must not reach upstream");
       assert.equal(body.result.isError, errorFormat !== "result");
       assert.equal(JSON.parse(body.result.content[0].text).error.code, errorCode);
       if (errorFormat === "result") {
