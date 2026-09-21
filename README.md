@@ -63,6 +63,8 @@ Non-interactive clients can use the separate `/service/mcp` route. When an admin
 
 Legacy JSON-RPC service tool calls receive finite `application/json` replies. Standard MCP tool failures retain `isError: true` by default. Clients that discard these errors can opt in with `X-MCP-Error-Format: result`. In that mode only, tool failures are delivered as normal MCP results containing `status: "error"`, `ok: false`, and a safe `error` object with `code`, `message`, and `retryable`. The client must check this envelope before using any data. Authentication failures and protocol errors keep their normal semantics. The OAuth `/mcp` route does not use this option.
 
+Each MCP data tool has a shared 30-second upstream request budget, including any lookups before its report. The service response handler allows 40 seconds to deliver the result or a safe error. Configure Retell's MCP `timeout_ms` as `60000` so it does not stop waiting before the server can return that error. OAuth sign-in and token-exchange timeouts are unchanged.
+
 ## Connect a client
 
 Use this remote MCP endpoint in a client that supports OAuth-enabled remote MCP servers:

@@ -10,7 +10,45 @@ import type { Env, SiteRecord } from "../src/types";
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
 describe("service MCP authentication", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+  it("allows a service data request to complete after the former eight-second limit", async () => {
+    vi.useFakeTimers();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      setTimeout(() => resolve(Response.json({ data: [{ name: "SUP-001" }] })), 15_000);
+      started();
+    })));
+    const pending = invokeTool("list_suppliers", {});
+    await ready;
+    await vi.advanceTimersByTimeAsync(15_000);
+    const result = await pending;
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toEqual([{ name: "SUP-001" }]);
+  });
+
+  it("keeps stalled service data calls open until the thirty-second deadline", async () => {
+    vi.useFakeTimers();
+    let started!: () => void;
+    const ready = new Promise<void>((resolve) => { started = resolve; });
+    let signal!: AbortSignal;
+    vi.stubGlobal("fetch", vi.fn((_url, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      signal = init.signal!;
+      signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      started();
+    })));
+    const pending = invokeTool("list_suppliers", {});
+    await ready;
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await pending;
+    expect(signal.aborted).toBe(true);
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "UPSTREAM_TIMEOUT", retryable: true } });
+  });
 
   it("maps a valid gateway token to a registered site's API token", async () => {
     const site = await apiTokenSite();
