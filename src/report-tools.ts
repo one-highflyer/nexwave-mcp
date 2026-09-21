@@ -442,8 +442,8 @@ export function normaliseAgeingSummary(
 ) {
   const allRows = (data.result ?? []).filter(isRecord);
   const totalRow = [...allRows].reverse().find(isAgeingTotalRow);
-  const groupedRows = allRows.filter(isGroupedPartyRow);
-  const partyRows = groupedRows.length > 0 ? groupedRows : aggregatePartyRows(allRows);
+  const groupedRows = allRows.filter((row) => row !== totalRow && isGroupedPartyRow(row));
+  const partyRows = groupedRows.length > 0 ? groupedRows : aggregatePartyRows(allRows, totalRow);
   const positiveBalances = partyRows
     .filter((row) => numericValue(row.outstanding) > 0)
     .sort((left, right) => numericValue(right.outstanding) - numericValue(left.outstanding));
@@ -524,14 +524,16 @@ function isAgeingTotalRow(row: Record<string, unknown>): boolean {
 function isGroupedPartyRow(row: Record<string, unknown>): boolean {
   return row.bold === 1
     && typeof row.party === "string"
-    && cleanText(row.party).toLowerCase() !== "total"
     && !(typeof row.voucher_no === "string" && row.voucher_no.trim());
 }
 
-function aggregatePartyRows(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+function aggregatePartyRows(
+  rows: Array<Record<string, unknown>>,
+  totalRow?: Record<string, unknown>,
+): Array<Record<string, unknown>> {
   const totals = new Map<string, Record<string, unknown>>();
   for (const row of rows) {
-    if (isAgeingTotalRow(row) || typeof row.party !== "string" || !row.party.trim()) continue;
+    if (row === totalRow || typeof row.party !== "string" || !row.party.trim()) continue;
     const party = cleanText(row.party);
     const currency = typeof row.currency === "string" ? cleanText(row.currency) : "";
     const key = `${party}\u0000${currency}`;

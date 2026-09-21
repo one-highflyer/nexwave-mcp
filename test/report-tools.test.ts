@@ -83,4 +83,25 @@ describe("report tool output", () => {
     expect(result.truncated).toBe(true);
     expect(JSON.stringify(result).indexOf('"totals"')).toBeLessThan(JSON.stringify(result).indexOf('"filters"'));
   });
+
+  it("keeps a customer named Total while excluding only the final report total", () => {
+    const result = normaliseAgeingSummary(
+      "Accounts Receivable",
+      { company: "Example Company", group_by_party: 1 },
+      {
+        result: [
+          { party: "Total", voucher_no: "INV-002", outstanding: 50, range1: 50, currency: "NZD" },
+          { party: "Total", bold: 1, outstanding: 50, range1: 50, currency: "NZD" },
+          { party: null },
+          { party: "Total", bold: 1, outstanding: 50, range1: 50, currency: "NZD" },
+        ],
+      },
+      [30, 60, 90, 120],
+      10,
+    );
+
+    expect(result.customer_count).toBe(1);
+    expect(result.top_customers[0]).toMatchObject({ customer: "Total", outstanding: 50 });
+    expect(result.totals.outstanding).toBe(50);
+  });
 });
