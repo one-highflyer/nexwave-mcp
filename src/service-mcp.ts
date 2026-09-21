@@ -3,6 +3,7 @@ import { getSiteByServiceTokenHash } from "./db";
 import { createNexWaveServer } from "./mcp";
 import { normaliseMcpToolArguments } from "./mcp-request";
 import { withMcpErrorBoundary } from "./mcp-boundary";
+import { withServiceToolJsonResponse } from "./service-response";
 import { decryptSecret, sha256 } from "./security";
 import type { Env, NexWaveApiTokenAuthProps } from "./types";
 
@@ -27,7 +28,8 @@ export async function handleServiceMcpRequest(
       legacy: "stateless",
       authContext: { props: { ...authentication.props } },
     });
-    return handler(await normaliseMcpToolArguments(withoutServiceToken(request)), env, ctx);
+    const normalised = await normaliseMcpToolArguments(withoutServiceToken(request));
+    return withServiceToolJsonResponse(normalised, async () => handler(normalised, env, ctx));
   });
 }
 

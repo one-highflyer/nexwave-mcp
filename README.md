@@ -61,6 +61,8 @@ The Worker is the protocol and security boundary between each AI client and each
 
 Non-interactive clients can use the separate `/service/mcp` route. When an administrator registers a fixed API-token site, the Worker verifies the Frappe credentials and returns a generated service token once. It stores only the service-token hash and encrypted Frappe credentials in D1. A service client sends the generated token in the `X-NexWave-Service-Token` header. This route exposes the same read-only tool catalogue as `/mcp`.
 
+Legacy JSON-RPC service tool calls receive finite `application/json` replies. Standard MCP tool failures retain `isError: true` by default. Clients that discard these errors can opt in with `X-MCP-Error-Format: result`. In that mode only, tool failures are delivered as normal MCP results containing `status: "error"`, `ok: false`, and a safe `error` object with `code`, `message`, and `retryable`. The client must check this envelope before using any data. Authentication failures and protocol errors keep their normal semantics. The OAuth `/mcp` route does not use this option.
+
 ## Connect a client
 
 Use this remote MCP endpoint in a client that supports OAuth-enabled remote MCP servers:

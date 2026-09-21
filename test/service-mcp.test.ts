@@ -93,7 +93,8 @@ describe("service MCP authentication", () => {
     expect(response.status).toBe(200);
     const body = await response.text();
     const dataLine = body.split("\n").find((line) => line.startsWith("data: "));
-    const payload = JSON.parse(dataLine?.slice(6) ?? "null") as {
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    const payload = JSON.parse(dataLine?.slice(6) ?? body) as {
       result?: { content?: Array<{ text?: string }> };
     };
     expect(JSON.parse(payload.result?.content?.[0]?.text ?? "null")).toEqual([
@@ -160,6 +161,30 @@ describe("service MCP authentication", () => {
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content[0].text)).toMatchObject({ error: { code: "UPSTREAM_INVALID_RESPONSE", retryable: false } });
     expect(JSON.stringify(result)).not.toContain("private failure");
+  });
+
+  it.each(["get_sales_summary", "get_profit_and_loss"])("delivers conflicting date errors as JSON for %s", async (name) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await handleServiceMcpRequest(serviceToolRequest("gateway-token", name, {
+      company: "Example Company", from_date: "2026-01-01", to_date: "2026-09-21",
+      period: "current_fiscal_year", as_of_date: "2026-09-21",
+      ...(name === "get_sales_summary" ? { group_by: "month" } : {}),
+    }), serviceEnv(await apiTokenSite()), executionContext());
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    const body = await response.json() as { id: number; result: { isError: boolean; content: Array<{ text: string }> } };
+    expect(body.id).toBe(1);
+    expect(body.result.isError).toBe(true);
+    expect(JSON.parse(body.result.content[0].text)).toMatchObject({ error: { code: "INVALID_ARGUMENT", retryable: false } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("delivers permission failures without upstream private content", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("private permission detail", { status: 403 })));
+    const result = await invokeTool("list_suppliers", {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("PERMISSION");
+    expect(JSON.stringify(result)).not.toContain("private permission detail");
   });
 
   it("filters unpaid invoices across overdue and partly paid statuses", async () => {
