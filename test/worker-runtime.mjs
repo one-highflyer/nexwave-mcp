@@ -14,8 +14,21 @@ const bundle = await build({
     resolveDir: root,
     contents: `
       import { exchangeFrappeCode, ensureFreshToken, getLoggedUser, getApiTokenUser, frappeList } from './src/frappe.ts';
+      import { handleServiceMcpRequest } from './src/service-mcp.ts';
+      import { encryptSecret, sha256 } from './src/security.ts';
       export default { async fetch(request) {
-        const { operation, status } = await request.json();
+        const { operation, status, tool, args } = await request.json();
+        if (operation === 'service-mcp') {
+          const key = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
+          const site = { id: 'site_test', display_name: 'Example', base_url: 'https://status-' + status + '.example.com', auth_type: 'api_token', enabled: 1,
+            encrypted_api_key: await encryptSecret('test-key', key), encrypted_api_secret: await encryptSecret('test-secret', key), api_user: 'test@example.com' };
+          const hash = await sha256('test-service-token');
+          const env = { CONFIG_ENCRYPTION_KEY: key, NEXWAVE_MCP_DB: { prepare: () => ({ bind: (value) => ({ first: async () => value === hash ? site : null }) }) } };
+          const mcpRequest = new Request('https://gateway.example.com/service/mcp', { method: 'POST', headers: {
+            'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'X-NexWave-Service-Token': 'test-service-token'
+          }, body: JSON.stringify({ jsonrpc: '2.0', id: 17, method: 'tools/call', params: { name: tool, arguments: args } }) });
+          return handleServiceMcpRequest(mcpRequest, env, { waitUntil() {} });
+        }
         const baseUrl = 'https://upstream.example.com/' + status;
         const oauth = { authType: 'oauth', baseUrl, upstreamAccessToken: 'test-access', upstreamRefreshToken: 'test-refresh', upstreamExpiresAt: 0, upstreamClientId: 'test-client', upstreamClientSecret: 'test-secret' };
         const api = { authType: 'api_token', baseUrl, upstreamApiKey: 'test-key', upstreamApiSecret: 'test-secret' };
@@ -38,6 +51,7 @@ const bundle = await build({
   bundle: true,
   format: "esm",
   write: false,
+  external: ["cloudflare:*", "node:*"],
 });
 
 let upstreamCalls = 0;
@@ -55,7 +69,8 @@ const mf = new Miniflare(convertV4MiniflareOptions({
       return new Response("Unexpected redirect target", { status: 500 });
     }
     const status = Number(url.hostname.startsWith("status-") ? url.hostname.split(/[.-]/)[1] : url.pathname.split("/")[1]);
-    assert.ok([200, 301, 302, 303, 307, 308].includes(status));
+    assert.ok([200, 301, 302, 303, 307, 308, 403, 404].includes(status));
+    if (status >= 400) return new Response("Private upstream failure", { status });
     if (status !== 200) return new Response("Private redirect body", { status, headers: { Location: "https://redirect.example.com/private" } });
     if (url.pathname.endsWith("get_token")) {
       assert.equal(request.method, "POST");
@@ -91,6 +106,27 @@ try {
     }
   }
   assert.equal(redirectTargetCalls, 0, "Credentials must never reach a redirect target");
+  for (const { status, tool, args, errorCode } of [
+    { status: 200, tool: "list_suppliers", args: {} },
+    { status: 403, tool: "list_suppliers", args: {}, errorCode: "PERMISSION_DENIED" },
+    { status: 404, tool: "get_document", args: { doctype: "Sales Invoice", name: "TEST-MISSING" }, errorCode: "NOT_FOUND" },
+    { status: 200, tool: "get_sales_summary", args: { company: "Example Company", group_by: "month", from_date: "2026-01-01", to_date: "2026-09-21", period: "current_fiscal_year", as_of_date: "2026-09-21" }, errorCode: "INVALID_ARGUMENT" },
+  ]) {
+    const response = await mf.dispatchFetch("http://localhost/", { method: "POST", body: JSON.stringify({ operation: "service-mcp", status, tool, args }) });
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("Content-Type"), /application\/json/);
+    const body = await response.json();
+    assert.equal(body.id, 17);
+    if (errorCode) {
+      assert.equal(body.result.isError, true);
+      assert.equal(JSON.parse(body.result.content[0].text).error.code, errorCode);
+      assert.ok(!JSON.stringify(body).includes("Private upstream failure"));
+    } else {
+      assert.notEqual(body.result.isError, true);
+      assert.deepEqual(JSON.parse(body.result.content[0].text), [{ name: "TEST-001" }]);
+    }
+    checks++;
+  }
   console.log(checks + " Cloudflare runtime checks passed; no redirects followed.");
 } finally {
   await mf.dispose();
