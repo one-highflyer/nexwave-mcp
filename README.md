@@ -142,7 +142,7 @@ All tools are read-only. List results and report output are bounded to keep MCP 
 | `get_trial_balance` | Trial Balance |
 | `get_general_ledger` | General Ledger |
 | `get_accounts_receivable` | Accounts Receivable |
-| `get_accounts_receivable_summary` | Accounts Receivable totals and top customer balances |
+| `get_accounts_receivable_summary` | Accounts Receivable totals, confirmed overdue, and top customer balances |
 | `get_accounts_payable` | Accounts Payable |
 | `get_bank_reconciliation_statement` | Bank Reconciliation Statement |
 
@@ -170,6 +170,10 @@ Tool execution shares an eight-second upstream budget for service-token clients 
 The stock-risk report covers existing item/warehouse stock rows only. It does not implement missing-Bin replenishment, warehouse-group reorder rules, demand forecasts or lead-time forecasts. A zero returned risk count is not evidence that all stock is safe.
 
 The deployment-ready [voice prompt](docs/voice-agent-prompt.md) and [evaluation cases](docs/voice-evaluation.md) describe the intended client behavior. Deploy the MCP changes, refresh the client's tool catalogue, and then publish the updated voice configuration. Keep all existing tools selected.
+
+The receivable summary adds `totals.overdue` when `overdue_complete` is true. It uses positive document balances due strictly before `report_date`, includes the overdue part of the first ageing bucket, and does not deduct unallocated credits. Missing due dates fall back to posting dates, as in the standard report. If dates or per-customer detail reconciliation are incomplete, the overdue field is omitted rather than reported as zero. Existing totals, ageing buckets and filters are unchanged, and no extra upstream report request is required. The voice prompt also supports sequential, customer-scoped summaries across balances, sales and relevant invoice/order tools, with explicit partial-result handling.
+
+Party and payable summaries also expose `overdue_complete` and omit overdue amounts when positive documents lack valid dates, while preserving their other balance totals. The prompt requires this confirmation on all three summaries. It can be published safely before the MCP update, but will report overdue as unavailable until the new field is deployed.
 
 ## Local development
 
