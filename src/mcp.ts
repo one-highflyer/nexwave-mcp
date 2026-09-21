@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
-import { frappeGet, ensureFreshToken, UPSTREAM_TIMEOUT_MS } from "./frappe";
+import { frappeGet, ensureFreshToken } from "./frappe";
 import { withMcpErrorBoundary } from "./mcp-boundary";
 import { listResult, searchRecords } from "./search";
 import { structuredResult, ToolError } from "./tool-result";
@@ -12,6 +12,7 @@ import { registerReportTools, validateDateRange } from "./report-tools";
 import type { Env, NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
+const TOOL_REQUEST_TIMEOUT_MS = 30_000;
 const SEARCH = z.string().trim().max(140).optional().describe("Free-text name, partial name, document number or reference spoken by the user. Do not include commands, date phrases or status words. Do not supply SQL wildcards.");
 const EXACT_PARTY = z.string().trim().min(1).max(140).optional().describe("Exact party ID returned by a lookup. Resolve spoken names through the appropriate party lookup or customer_query/supplier_query when available.");
 const INVOICE_STATUS = z.enum(["Draft", "Return", "Credit Note Issued", "Debit Note Issued", "Submitted", "Paid", "Partly Paid", "Unpaid", "Unpaid and Discounted", "Partly Paid and Discounted", "Overdue and Discounted", "Overdue", "Cancelled", "Internal Transfer"]).optional();
@@ -403,7 +404,7 @@ function hasUpstreamAuthentication(props: NexWaveAuthProps): boolean {
 
 async function currentProps(): Promise<NexWaveAuthProps> {
   const props = getAuthProps();
-  const requestDeadline = Date.now() + (props.authType === "api_token" ? UPSTREAM_TIMEOUT_MS : 30_000);
+  const requestDeadline = Date.now() + TOOL_REQUEST_TIMEOUT_MS;
   return ensureFreshToken({ ...props, requestDeadline });
 }
 
