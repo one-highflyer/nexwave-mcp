@@ -120,6 +120,7 @@ All tools are read-only. List results and report output are bounded to keep MCP 
 | --- | --- |
 | `list_sales_orders` | List sales orders |
 | `list_sales_invoices` | Search and filter sales invoices |
+| `list_purchase_orders` | Search and filter purchase orders |
 | `list_purchase_invoices` | Search and filter purchase invoices |
 | `list_payments` | Search and filter payment entries |
 | `list_bank_transactions` | Search and filter imported bank transactions |

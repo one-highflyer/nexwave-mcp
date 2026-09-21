@@ -77,7 +77,7 @@ describe("service MCP authentication", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const response = await handleServiceMcpRequest(
-      serviceToolRequest("gateway-token", {
+      serviceToolRequest("gateway-token", "list_sales_invoices", {
         search: null,
         limit: 50,
         company: null,
@@ -106,6 +106,53 @@ describe("service MCP authentication", () => {
       ["Sales Invoice", "status", "=", "Unpaid"],
     ]);
   });
+
+  it("lists purchase orders using bounded, permission-aware Frappe filters", async () => {
+    const site = await apiTokenSite();
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        data: [{ name: "PO-00001", supplier: "SUP-00001", status: "To Receive and Bill" }],
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await handleServiceMcpRequest(
+      serviceToolRequest("gateway-token", "list_purchase_orders", {
+        search: "Example",
+        limit: 25,
+        company: "Example Company",
+        supplier: "SUP-00001",
+        status: "To Receive and Bill",
+        from_date: "2026-09-01",
+        to_date: "2026-09-30",
+      }),
+      serviceEnv(site),
+      executionContext(),
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(fetchMock, body).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    const upstream = new URL(String(url));
+    expect(upstream.pathname).toBe("/api/resource/Purchase%20Order");
+    expect(upstream.searchParams.get("limit_page_length")).toBe("25");
+    expect(upstream.searchParams.get("order_by")).toBe("transaction_date desc");
+    expect(JSON.parse(upstream.searchParams.get("filters") ?? "[]")).toEqual([
+      ["Purchase Order", "company", "=", "Example Company"],
+      ["Purchase Order", "supplier", "=", "SUP-00001"],
+      ["Purchase Order", "status", "=", "To Receive and Bill"],
+      ["Purchase Order", "transaction_date", ">=", "2026-09-01"],
+      ["Purchase Order", "transaction_date", "<=", "2026-09-30"],
+    ]);
+    expect(JSON.parse(upstream.searchParams.get("or_filters") ?? "[]")).toEqual([
+      ["Purchase Order", "name", "like", "%Example%"],
+      ["Purchase Order", "supplier_name", "like", "%Example%"],
+    ]);
+    expect((init as RequestInit).headers).toMatchObject({
+      Authorization: "token api-key:api-secret",
+    });
+  });
 });
 
 function serviceRequest(token?: string): Request {
@@ -113,7 +160,11 @@ function serviceRequest(token?: string): Request {
   return new Request("https://mcp.example.com/service/mcp", { method: "POST", headers });
 }
 
-function serviceToolRequest(token: string, args: Record<string, unknown>): Request {
+function serviceToolRequest(
+  token: string,
+  toolName: string,
+  args: Record<string, unknown>,
+): Request {
   return new Request("https://mcp.example.com/service/mcp", {
     method: "POST",
     headers: {
@@ -125,7 +176,7 @@ function serviceToolRequest(token: string, args: Record<string, unknown>): Reque
       jsonrpc: "2.0",
       id: 1,
       method: "tools/call",
-      params: { name: "list_sales_invoices", arguments: args },
+      params: { name: toolName, arguments: args },
     }),
   });
 }

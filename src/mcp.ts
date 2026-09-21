@@ -13,7 +13,7 @@ const READABLE_DOCTYPES = {
   Item: ["name", "item_name", "item_group", "stock_uom", "disabled"],
   "Sales Order": ["name", "customer", "customer_name", "transaction_date", "delivery_date", "status", "currency", "grand_total"],
   "Sales Invoice": ["name", "company", "customer", "customer_name", "posting_date", "due_date", "status", "currency", "grand_total", "outstanding_amount"],
-  "Purchase Order": ["name", "supplier", "supplier_name", "transaction_date", "schedule_date", "status", "currency", "grand_total"],
+  "Purchase Order": ["name", "company", "supplier", "supplier_name", "transaction_date", "schedule_date", "status", "currency", "grand_total"],
   "Purchase Invoice": ["name", "company", "supplier", "supplier_name", "posting_date", "due_date", "status", "currency", "grand_total", "outstanding_amount"],
   "Payment Entry": ["name", "posting_date", "company", "payment_type", "party_type", "party", "party_name", "mode_of_payment", "paid_from", "paid_to", "paid_amount", "received_amount", "unallocated_amount", "reference_no", "reference_date", "status"],
   "Bank Transaction": ["name", "date", "company", "bank_account", "description", "reference_number", "transaction_id", "transaction_type", "currency", "deposit", "withdrawal", "allocated_amount", "unallocated_amount", "status", "party_type", "party"],
@@ -227,6 +227,26 @@ export function createNexWaveServer(): McpServer {
       ...dateFilters("Purchase Invoice", "posting_date", from_date, to_date),
     ],
     orderBy: "posting_date desc",
+  });
+
+  registerLookupTool(server, "list_purchase_orders", "Purchase Order", {
+    description: "List purchase orders visible to the signed-in NexWave user.",
+    fields: [...READABLE_DOCTYPES["Purchase Order"]],
+    searchFields: ["name", "supplier_name"],
+    extraSchema: {
+      company: z.string().trim().min(1).max(140).optional(),
+      supplier: z.string().trim().min(1).max(140).optional(),
+      status: z.string().trim().min(1).max(50).optional(),
+      from_date: DATE.optional(),
+      to_date: DATE.optional(),
+    },
+    filters: ({ company, supplier, status, from_date, to_date }) => [
+      ...(company ? [["Purchase Order", "company", "=", company]] : []),
+      ...(supplier ? [["Purchase Order", "supplier", "=", supplier]] : []),
+      ...(status ? [["Purchase Order", "status", "=", status]] : []),
+      ...dateFilters("Purchase Order", "transaction_date", from_date, to_date),
+    ],
+    orderBy: "transaction_date desc",
   });
 
   registerLookupTool(server, "list_payments", "Payment Entry", {
