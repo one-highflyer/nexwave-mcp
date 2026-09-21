@@ -183,11 +183,15 @@ async function requestToken(
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
       body: new URLSearchParams(values),
-      redirect: "error",
+      // Workers supports manual redirects, not the browser's error mode.
+      redirect: "manual",
       signal: controller.signal,
     });
     if (!response.ok) {
       await response.body?.cancel();
+      if (response.status >= 300 && response.status < 400) {
+        throw new ToolError("UPSTREAM_UNAVAILABLE", "NexWave OAuth returned a redirect. Check the registered site URL.");
+      }
       if ([400, 401, 403].includes(response.status)) {
         throw new ToolError("AUTHENTICATION_REQUIRED", "The NexWave connection needs to be authenticated again.");
       }
@@ -240,7 +244,7 @@ async function frappeFetch<T>(url: string, authorization: string, init: RequestI
     const response = await fetch(url, {
       ...init,
       signal: controller.signal,
-      redirect: "error",
+      redirect: "manual",
       headers: {
         Authorization: authorization,
         Accept: "application/json",
@@ -250,6 +254,9 @@ async function frappeFetch<T>(url: string, authorization: string, init: RequestI
     status = response.status;
     if (!response.ok) {
       await response.body?.cancel();
+      if (response.status >= 300 && response.status < 400) {
+        throw new ToolError("UPSTREAM_UNAVAILABLE", "NexWave returned a redirect. Check the registered site URL.");
+      }
       if (response.status === 401) {
         throw new ToolError("AUTHENTICATION_REQUIRED", "The NexWave connection needs to be authenticated again.");
       }

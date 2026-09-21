@@ -10,6 +10,7 @@
     "check": "tsc --noEmit",
     "dev": "wrangler dev",
     "test": "vitest run",
+    "test:runtime": "node test/worker-runtime.mjs",
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 migrations apply NEXWAVE_MCP_DB --local",
     "db:remote": "wrangler d1 migrations apply NEXWAVE_MCP_DB --remote"
