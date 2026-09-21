@@ -231,7 +231,7 @@ function upstreamAuthorization(props: NexWaveAuthProps): string {
 }
 
 function remainingTime(props: NexWaveAuthProps): number {
-  const remaining = props.requestDeadline === undefined ? 30_000 : props.requestDeadline - Date.now();
+  const remaining = props.requestDeadline === undefined ? 50_000 : props.requestDeadline - Date.now();
   if (remaining <= 0) throw new ToolError("UPSTREAM_TIMEOUT", "The request time limit was reached. Please try again later.", true);
   return remaining;
 }

@@ -29,7 +29,7 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[0].text)).toEqual([{ name: "SUP-001" }]);
   });
 
-  it("keeps stalled service data calls open until the thirty-second deadline", async () => {
+  it("keeps stalled service data calls open until the fifty-second deadline", async () => {
     vi.useFakeTimers();
     let started!: () => void;
     const ready = new Promise<void>((resolve) => { started = resolve; });
@@ -41,7 +41,7 @@ describe("service MCP authentication", () => {
     })));
     const pending = invokeTool("list_suppliers", {});
     await ready;
-    await vi.advanceTimersByTimeAsync(29_999);
+    await vi.advanceTimersByTimeAsync(49_999);
     expect(signal.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     const result = await pending;

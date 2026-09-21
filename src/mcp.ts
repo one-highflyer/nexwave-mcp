@@ -13,7 +13,7 @@ import { SALES_INVOICE_STATUS, PURCHASE_INVOICE_STATUS, SALES_ORDER_STATUS, PURC
 import type { Env, NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
-const TOOL_REQUEST_TIMEOUT_MS = 30_000;
+const TOOL_REQUEST_TIMEOUT_MS = 50_000;
 const SEARCH = z.string().trim().max(140).optional().describe("Free-text name, partial name, document number or reference spoken by the user. Do not include commands, date phrases or status words. Do not supply SQL wildcards.");
 const EXACT_PARTY = z.string().trim().min(1).max(140).optional().describe("Exact party ID returned by a lookup. Resolve spoken names through the appropriate party lookup or customer_query/supplier_query when available.");
 const INVOICE_FILTERS = {
