@@ -45,17 +45,17 @@ it("does not share upstream OAuth tokens between concurrent requests", async () 
   expect(JSON.parse(second.content[0].text)).toEqual([{ name: "SUP-B" }]);
 });
 
-it("preserves permission failures as safe MCP errors on the OAuth route", async () => {
+it.each([false, true])("preserves OAuth errors even with service compatibility header %s", async (compatibilityHeader) => {
   const fetchMock = vi.fn().mockResolvedValue(new Response("private upstream response", { status: 403 }));
   vi.stubGlobal("fetch", fetchMock);
-  const result = await callTool(props, "list_suppliers", { search: "Example" });
+  const result = await callTool(props, "list_suppliers", { search: "Example" }, compatibilityHeader);
   expect(result.isError).toBe(true);
   expect(result.content[0].text).toContain("PERMISSION_DENIED");
   expect(result.content[0].text).not.toContain("private upstream");
   expect(fetchMock).toHaveBeenCalledOnce();
 });
 
-async function callTool(authProps: NexWaveOAuthAuthProps, name: string, args: Record<string, unknown>) {
+async function callTool(authProps: NexWaveOAuthAuthProps, name: string, args: Record<string, unknown>, compatibilityHeader = false) {
   // Simulate the trusted context supplied by the OAuth provider after verification.
   const context = {
     props: authProps,
@@ -67,7 +67,7 @@ async function callTool(authProps: NexWaveOAuthAuthProps, name: string, args: Re
   } as unknown as ExecutionContext;
   const response = await mcpHandler(new Request("https://mcp.example.com/mcp", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", ...(compatibilityHeader ? { "X-MCP-Error-Format": "result" } : {}) },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }),
   }), {} as Env, context);
   expect(response.status).toBe(200);

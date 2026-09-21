@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { withServiceToolJsonResponse } from "../src/service-response";
+import { SERVICE_ERROR_FORMAT_HEADER, withServiceToolJsonResponse } from "../src/service-response";
 
 afterEach(() => vi.useRealTimers());
 const payload = { jsonrpc: "2.0", id: 1, result: { isError: true, content: [{ type: "text", text: '{"error":{"code":"INVALID_ARGUMENT"}}' }] } };
@@ -14,6 +14,45 @@ it("returns JSON without changing the error flag, content or request ID", async 
   expect(response.headers.get("Cache-Control")).toBe("no-store");
   expect(response.headers.get("Access-Control-Allow-Origin")).toBe("*");
   expect(await response.json()).toEqual(payload);
+});
+
+it.each(["INVALID_ARGUMENT", "UPSTREAM_TIMEOUT", "PERMISSION_DENIED", "NOT_FOUND"])("delivers an explicit opt-in %s envelope", async (code) => {
+  const req = request();
+  req.headers.set(SERVICE_ERROR_FORMAT_HEADER, "result");
+  const error = { code, message: "Safe explanation", retryable: code === "UPSTREAM_TIMEOUT" };
+  const message = { ...payload, result: { isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] } };
+  const response = await withServiceToolJsonResponse(req, async () => sse(`data: ${JSON.stringify(message)}\n\n`));
+  const body = await response.json() as { id: number; result: { isError: boolean; content: Array<{ text: string }>; structuredContent: unknown } };
+  expect(body.id).toBe(1);
+  expect(body.result.isError).toBe(false);
+  expect(body.result.structuredContent).toEqual({ status: "error", ok: false, error });
+  expect(JSON.parse(body.result.content[0].text)).toEqual(body.result.structuredContent);
+});
+
+it.each([
+  ["Input validation failed for tool: private supplied value", "INVALID_ARGUMENT"],
+  ["private unexpected exception", "INTERNAL_ERROR"],
+  ['{"error":{"code":"UNKNOWN","message":"private"}}', "INTERNAL_ERROR"],
+])("sanitises unstructured errors in opt-in mode", async (text, code) => {
+  const req = request();
+  req.headers.set(SERVICE_ERROR_FORMAT_HEADER, "result");
+  const message = { ...payload, result: { isError: true, content: [{ type: "text", text }] } };
+  const response = await withServiceToolJsonResponse(req, async () => sse(`data: ${JSON.stringify(message)}\n\n`));
+  const body = await response.text();
+  expect(body).toContain(code);
+  expect(body).not.toContain("private");
+});
+
+it("does not convert protocol errors or successful data in opt-in mode", async () => {
+  const req = request();
+  req.headers.set(SERVICE_ERROR_FORMAT_HEADER, "result");
+  for (const message of [
+    { jsonrpc: "2.0", id: 1, error: { code: -32601, message: "Unknown method" } },
+    { jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: '{"records":[]}' }] } },
+  ]) {
+    const response = await withServiceToolJsonResponse(req, async () => sse(`data: ${JSON.stringify(message)}\n\n`));
+    expect(await response.json()).toEqual(message);
+  }
 });
 
 it("handles split UTF-8, CRLF, comments, multiline data and unrelated IDs", async () => {

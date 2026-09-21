@@ -17,7 +17,7 @@ const bundle = await build({
       import { handleServiceMcpRequest } from './src/service-mcp.ts';
       import { encryptSecret, sha256 } from './src/security.ts';
       export default { async fetch(request) {
-        const { operation, status, tool, args } = await request.json();
+        const { operation, status, tool, args, errorFormat } = await request.json();
         if (operation === 'service-mcp') {
           const key = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8';
           const site = { id: 'site_test', display_name: 'Example', base_url: 'https://status-' + status + '.example.com', auth_type: 'api_token', enabled: 1,
@@ -25,7 +25,8 @@ const bundle = await build({
           const hash = await sha256('test-service-token');
           const env = { CONFIG_ENCRYPTION_KEY: key, NEXWAVE_MCP_DB: { prepare: () => ({ bind: (value) => ({ first: async () => value === hash ? site : null }) }) } };
           const mcpRequest = new Request('https://gateway.example.com/service/mcp', { method: 'POST', headers: {
-            'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'X-NexWave-Service-Token': 'test-service-token'
+            'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'X-NexWave-Service-Token': 'test-service-token',
+            ...(errorFormat ? { 'X-MCP-Error-Format': errorFormat } : {})
           }, body: JSON.stringify({ jsonrpc: '2.0', id: 17, method: 'tools/call', params: { name: tool, arguments: args } }) });
           return handleServiceMcpRequest(mcpRequest, env, { waitUntil() {} });
         }
@@ -106,20 +107,24 @@ try {
     }
   }
   assert.equal(redirectTargetCalls, 0, "Credentials must never reach a redirect target");
-  for (const { status, tool, args, errorCode } of [
+  for (const errorFormat of [undefined, "result"]) for (const { status, tool, args, errorCode } of [
     { status: 200, tool: "list_suppliers", args: {} },
     { status: 403, tool: "list_suppliers", args: {}, errorCode: "PERMISSION_DENIED" },
     { status: 404, tool: "get_document", args: { doctype: "Sales Invoice", name: "TEST-MISSING" }, errorCode: "NOT_FOUND" },
     { status: 200, tool: "get_sales_summary", args: { company: "Example Company", group_by: "month", from_date: "2026-01-01", to_date: "2026-09-21", period: "current_fiscal_year", as_of_date: "2026-09-21" }, errorCode: "INVALID_ARGUMENT" },
   ]) {
-    const response = await mf.dispatchFetch("http://localhost/", { method: "POST", body: JSON.stringify({ operation: "service-mcp", status, tool, args }) });
+    const response = await mf.dispatchFetch("http://localhost/", { method: "POST", body: JSON.stringify({ operation: "service-mcp", status, tool, args, errorFormat }) });
     assert.equal(response.status, 200);
     assert.match(response.headers.get("Content-Type"), /application\/json/);
     const body = await response.json();
     assert.equal(body.id, 17);
     if (errorCode) {
-      assert.equal(body.result.isError, true);
+      assert.equal(body.result.isError, errorFormat !== "result");
       assert.equal(JSON.parse(body.result.content[0].text).error.code, errorCode);
+      if (errorFormat === "result") {
+        assert.equal(body.result.structuredContent.status, "error");
+        assert.equal(body.result.structuredContent.ok, false);
+      }
       assert.ok(!JSON.stringify(body).includes("Private upstream failure"));
     } else {
       assert.notEqual(body.result.isError, true);

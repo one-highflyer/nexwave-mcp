@@ -1,5 +1,10 @@
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 const RESPONSE_TIMEOUT_MS = 12_000;
+export const SERVICE_ERROR_FORMAT_HEADER = "X-MCP-Error-Format";
+const SAFE_ERROR_CODES = new Set([
+  "INVALID_ARGUMENT", "AUTHENTICATION_REQUIRED", "NOT_FOUND", "PERMISSION_DENIED",
+  "RESULT_TOO_LARGE", "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE",
+]);
 
 /** Return finite service tool replies as JSON. OAuth and MCP error semantics stay unchanged. */
 export async function withServiceToolJsonResponse(
@@ -47,7 +52,9 @@ export async function withServiceToolJsonResponse(
         headers.set("Cache-Control", "no-store");
         headers.delete("Content-Length");
         headers.delete("Content-Encoding");
-        return Response.json(message, { headers });
+        const body = request.headers.get(SERVICE_ERROR_FORMAT_HEADER) === "result"
+          ? withErrorEnvelope(message) : message;
+        return Response.json(body, { headers });
       }
     }
   } finally {
@@ -56,4 +63,35 @@ export async function withServiceToolJsonResponse(
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+}
+
+/** Opt-in for clients that discard MCP tool errors. The payload still declares failure. */
+function withErrorEnvelope(message: Record<string, unknown>): Record<string, unknown> {
+  const result = message.result;
+  if (!isRecord(result) || result.isError !== true) return message;
+  let error = { code: "INTERNAL_ERROR", message: "The tool request could not be completed.", retryable: false };
+  const first = Array.isArray(result.content) ? result.content[0] : undefined;
+  const text = isRecord(first) && first.type === "text" && typeof first.text === "string" ? first.text : "";
+  if (text.startsWith("Input validation failed")) {
+    error = { code: "INVALID_ARGUMENT", message: "The tool arguments do not match its schema. Check required fields and allowed values.", retryable: false };
+  } else {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      const candidate = isRecord(parsed) ? parsed.error : undefined;
+      if (isRecord(candidate) && typeof candidate.code === "string" && SAFE_ERROR_CODES.has(candidate.code)
+        && typeof candidate.message === "string" && typeof candidate.retryable === "boolean") {
+        error = { code: candidate.code, message: candidate.message, retryable: candidate.retryable };
+      }
+    } catch { /* Never expose unexpected exception details in the compatibility envelope. */ }
+  }
+  const failure = { status: "error", ok: false, error };
+  return { ...message, result: {
+    isError: false,
+    content: [{ type: "text", text: JSON.stringify(failure) }],
+    structuredContent: failure,
+  } };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
