@@ -5,8 +5,8 @@ import type { NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 export const PERIOD_SCHEMA = {
-  from_date: DATE.optional(),
-  to_date: DATE.optional(),
+  from_date: DATE.optional().describe("Explicit range start. Requires to_date. Omit both period and as_of_date when using explicit dates."),
+  to_date: DATE.optional().describe("Explicit range end. Requires from_date. Omit both period and as_of_date when using explicit dates."),
   period: z.enum(["current_fiscal_year", "last_month", "last_90_days"]).optional().describe("Use instead of from_date/to_date. Requires as_of_date. Default report period is current_fiscal_year when dates are not specified."),
   as_of_date: DATE.optional().describe("Today's calendar date in the user's timezone, used to resolve period. Never guess or hardcode this date."),
 };

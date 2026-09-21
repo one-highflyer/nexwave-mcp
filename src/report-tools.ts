@@ -8,6 +8,8 @@ import type { NexWaveAuthProps } from "./types";
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
 const NAME = z.string().trim().min(1).max(140);
 const NAMES = z.array(NAME).max(20).optional();
+const STOCK_ITEMS = z.array(NAME).min(1).max(20).optional().describe("One or more exact item IDs confirmed by list_items. Omit for all permitted items; never send an empty array.");
+const STOCK_WAREHOUSES = z.array(NAME).min(1).max(20).optional().describe("One or more exact warehouse IDs confirmed by list_warehouses. Omit for all permission-visible warehouses; never send an empty array.");
 const REPORT_LIMIT = z.number().int().min(1).max(200).default(100);
 const AGEING_SUMMARY_LIMIT = z.number().int().min(1).max(10).default(10);
 const PERIODICITY = z.enum(["Monthly", "Quarterly", "Half-Yearly", "Yearly"]);
@@ -36,8 +38,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       inputSchema: {
         company: NAME,
         ...PERIOD_SCHEMA,
-        item_codes: NAMES,
-        warehouses: NAMES,
+        item_codes: STOCK_ITEMS,
+        warehouses: STOCK_WAREHOUSES,
         item_group: NAME.optional(),
         include_zero_stock_items: z.boolean().default(false),
         limit: REPORT_LIMIT,
@@ -73,8 +75,8 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       inputSchema: {
         company: NAME,
         ...PERIOD_SCHEMA,
-        item_codes: NAMES,
-        warehouses: NAMES,
+        item_codes: STOCK_ITEMS,
+        warehouses: STOCK_WAREHOUSES,
         item_group: NAME.optional(),
         batch_no: NAME.optional(),
         voucher_no: NAME.optional(),

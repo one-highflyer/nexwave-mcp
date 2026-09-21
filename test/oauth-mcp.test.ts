@@ -30,6 +30,34 @@ it("uses a refreshed OAuth token for the actual tool request", async () => {
   expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer fresh-token");
 });
 
+it.each(["list_sales_invoices", "list_purchase_invoices"])("preserves OAuth invoice scope with optional null and All status for %s", async (tool) => {
+  const fetchMock = vi.fn().mockImplementation(async () => Response.json({ data: [] }));
+  vi.stubGlobal("fetch", fetchMock);
+  for (const status of [null, "All"]) {
+    const result = await callTool(props, tool, { company: "Example Company", status, unpaid_only: true, from_date: null, to_date: null, docstatus: null });
+    expect(result.isError).not.toBe(true);
+    const [input, init] = fetchMock.mock.calls.at(-1)!;
+    expect(init.headers.Authorization).toBe("Bearer old-token");
+    const filters = JSON.parse(new URL(String(input)).searchParams.get("filters")!);
+    expect(filters.some((f: unknown[]) => f[1] === "status")).toBe(false);
+    expect(filters.some((f: unknown[]) => f[1] === "outstanding_amount" && f[2] === ">" && f[3] === 0)).toBe(true);
+  }
+});
+
+it.each([
+  ["list_sales_invoices", { customer_query: "Example", status: "Paid", unpaid_only: true }],
+  ["list_purchase_invoices", { supplier_query: "Example", status: "Submitted", overdue_as_of: "2026-06-30" }],
+  ["list_sales_orders", { customer_query: "Example", pending_delivery: true, status: "Draft" }],
+  ["list_purchase_orders", { supplier_query: "Example", pending_receipt: true, docstatus: 0 }],
+] as const)("rejects invalid %s combinations before even refreshing an expired OAuth token", async (tool, args) => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await callTool({ ...props, upstreamExpiresAt: Date.now() - 1 }, tool, args);
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain("INVALID_ARGUMENT");
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
 it("does not share upstream OAuth tokens between concurrent requests", async () => {
   const fetchMock = vi.fn(async (_input: string, init: RequestInit) => {
     await Promise.resolve();
