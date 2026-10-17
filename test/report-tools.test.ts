@@ -219,3 +219,26 @@ describe("report tool output", () => {
     expect(result).toMatchObject({ overdue_complete: true, totals: { overdue: 100 }, customer_count: 1 });
   });
 });
+
+
+it("continues report pages without losing a total row at the end", () => {
+  const report = { columns: [{ fieldname: "account", label: "Account" }], result: [{ account: "A" }, { account: "B" }, { account: "Total", is_total_row: true }] };
+  const first = normaliseReportResult("Trial Balance", {}, report, 2);
+  expect(first).toMatchObject({ row_count: 3, next_offset: 2, complete: false });
+  expect(first.warning).toContain("one report page");
+  const last = normaliseReportResult("Trial Balance", {}, report, 2, 2);
+  expect(last.rows).toEqual([{ account: "Total", is_total_row: true }]);
+  expect(last).toMatchObject({ next_offset: null, truncated: false, complete: false });
+  expect(normaliseReportResult("Trial Balance", {}, report, 2, 10)).toMatchObject({ rows: [], next_offset: null, complete: false });
+});
+
+
+it("discloses column and summary clipping even when all rows fit", () => {
+  const result = normaliseReportResult("Profit and Loss Statement", {}, {
+    columns: Array.from({ length: 101 }, (_, i) => ({ fieldname: `field_${i}`, label: `Field ${i}` })),
+    result: [], report_summary: Array.from({ length: 21 }, () => ({ label: "Value", value: 1 })),
+  }, 100);
+  expect(result.complete).toBe(false);
+  expect(result.warning).toContain("columns");
+  expect(result.warning).toContain("summary");
+});

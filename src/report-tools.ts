@@ -11,6 +11,7 @@ const NAMES = z.array(NAME).max(20).optional();
 const STOCK_ITEMS = z.array(NAME).min(1).max(20).optional().describe("One or more exact item IDs confirmed by list_items. Omit for all permitted items; never send an empty array.");
 const STOCK_WAREHOUSES = z.array(NAME).min(1).max(20).optional().describe("One or more exact warehouse IDs confirmed by list_warehouses. Omit for all permission-visible warehouses; never send an empty array.");
 const REPORT_LIMIT = z.number().int().min(1).max(200).default(100);
+const REPORT_OFFSET = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0).describe("Row offset in this report. Repeat identical filters with next_offset. The report is rerun and can change between calls.");
 const AGEING_SUMMARY_LIMIT = z.number().int().min(1).max(10).default(10);
 const PERIODICITY = z.enum(["Monthly", "Quarterly", "Half-Yearly", "Yearly"]);
 const STRUCTURAL_FIELDS = new Set([
@@ -43,9 +44,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         item_group: NAME.optional(),
         include_zero_stock_items: z.boolean().default(false),
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, include_zero_stock_items, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, include_zero_stock_items, limit, offset }) => {
       const props = await getProps();
       const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date);
@@ -63,7 +65,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           ignore_closing_balance: 0,
           valuation_field_type: "Currency",
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -82,9 +84,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         voucher_no: NAME.optional(),
         project: NAME.optional(),
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, batch_no, voucher_no, project, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, item_codes, warehouses, item_group, batch_no, voucher_no, project, limit, offset }) => {
       const props = await getProps();
       const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
@@ -104,7 +107,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           valuation_field_type: "Currency",
           segregate_serial_batch_bundle: 0,
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -121,9 +124,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         projects: NAMES,
         presentation_currency: z.string().trim().min(3).max(20).optional(),
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, from_date: from, to_date: to, period, as_of_date, periodicity, cost_centres, projects, presentation_currency, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, periodicity, cost_centres, projects, presentation_currency, limit, offset }) => {
       const props = await getProps();
       const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date);
@@ -144,7 +148,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_zero_values: 0,
           selected_view: "Report",
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -162,9 +166,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         finance_book: NAME.optional(),
         presentation_currency: z.string().trim().min(3).max(20).optional(),
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, fiscal_year: fiscalYear, from_date: from, to_date: to, period, as_of_date, cost_centres, projects, finance_book, presentation_currency, limit }) => {
+    async ({ company, fiscal_year: fiscalYear, from_date: from, to_date: to, period, as_of_date, cost_centres, projects, finance_book, presentation_currency, limit, offset }) => {
       const props = await getProps();
       const dates = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       const { from_date, to_date } = dates;
@@ -193,7 +198,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_group_accounts: 1,
           show_zero_values: 0,
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -214,9 +219,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         finance_book: NAME.optional(),
         group_by: z.enum(["voucher", "voucher_consolidated", "account", "party"]).default("voucher_consolidated"),
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, from_date: from, to_date: to, period, as_of_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit }) => {
+    async ({ company, from_date: from, to_date: to, period, as_of_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit, offset }) => {
       const props = await getProps();
       const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
@@ -245,7 +251,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_cancelled_entries: 0,
           show_remarks: 0,
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -304,9 +310,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         cost_centres: NAMES,
         projects: NAMES,
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, report_date, customers, customer_groups, ageing_based_on, ageing_ranges, group_by_customer, cost_centres, projects, limit }) => {
+    async ({ company, report_date, customers, customer_groups, ageing_based_on, ageing_ranges, group_by_customer, cost_centres, projects, limit, offset }) => {
       validateDateRange(report_date, report_date);
       validateAgeingRanges(ageing_ranges);
       return runReport(
@@ -327,7 +334,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_future_payments: 0,
           show_remarks: 0,
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -347,9 +354,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         cost_centres: NAMES,
         projects: NAMES,
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, report_date, suppliers, supplier_groups, ageing_based_on, ageing_ranges, group_by_supplier, cost_centres, projects, limit }) => {
+    async ({ company, report_date, suppliers, supplier_groups, ageing_based_on, ageing_ranges, group_by_supplier, cost_centres, projects, limit, offset }) => {
       validateDateRange(report_date, report_date);
       validateAgeingRanges(ageing_ranges);
       return runReport(
@@ -370,7 +378,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           show_future_payments: 0,
           show_remarks: 0,
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -385,9 +393,10 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         report_date: DATE,
         include_pos_transactions: z.boolean().default(false),
         limit: REPORT_LIMIT,
+        offset: REPORT_OFFSET,
       },
     },
-    async ({ company, account, report_date, include_pos_transactions, limit }) => {
+    async ({ company, account, report_date, include_pos_transactions, limit, offset }) => {
       validateDateRange(report_date, report_date);
       return runReport(
         getProps,
@@ -398,7 +407,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
           report_date,
           include_pos_transactions: include_pos_transactions ? 1 : 0,
         },
-        limit,
+        limit, offset,
       );
     },
   );
@@ -409,10 +418,11 @@ async function runReport(
   reportName: string,
   filters: Record<string, unknown>,
   limit: number,
+  offset = 0,
 ) {
   const cleanFilters = compactFilters(filters);
   const data = await frappeRunReport(await getProps(), reportName, cleanFilters);
-  return textResult(normaliseReportResult(reportName, cleanFilters, data, limit));
+  return textResult(normaliseReportResult(reportName, cleanFilters, data, limit, offset));
 }
 
 export function normaliseReportResult(
@@ -420,6 +430,7 @@ export function normaliseReportResult(
   filters: Record<string, unknown>,
   data: FrappeReportResult,
   limit: number,
+  offset = 0,
 ) {
   const columns = (data.columns ?? []).slice(0, 100).flatMap((column) => {
     if (!column.fieldname || !column.label) return [];
@@ -433,8 +444,13 @@ export function normaliseReportResult(
   });
   const allowedFields = new Set(columns.map((column) => column.fieldname));
   const allRows = (data.result ?? []).filter(isRecord);
-  const rows = allRows.slice(0, limit).map((row) => sanitiseRow(row, allowedFields));
+  const rows = allRows.slice(offset, offset + limit).map((row) => sanitiseRow(row, allowedFields));
   const summary = (data.report_summary ?? []).slice(0, 20).map(sanitiseSummary);
+  const warnings = [
+    ...(offset > 0 || allRows.length > rows.length ? ["These rows are one report page. Do not compute full-report totals from this page. If next_offset is not null, follow it with identical filters; otherwise combine this page with earlier pages."] : []),
+    ...((data.columns?.length ?? 0) > 100 ? ["Report columns are limited to the first 100."] : []),
+    ...((data.report_summary?.length ?? 0) > 20 ? ["Report summary entries are limited to the first 20."] : []),
+  ];
 
   return {
     report,
@@ -443,7 +459,11 @@ export function normaliseReportResult(
     rows,
     summary,
     row_count: allRows.length,
-    truncated: allRows.length > rows.length,
+    offset,
+    next_offset: offset + rows.length < allRows.length ? offset + rows.length : null,
+    truncated: offset + rows.length < allRows.length,
+    complete: warnings.length === 0,
+    warning: warnings.length ? warnings.join(" ") : null,
     ...(typeof data.execution_time === "number" ? { execution_time: data.execution_time } : {}),
   };
 }

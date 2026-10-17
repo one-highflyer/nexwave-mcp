@@ -67,7 +67,7 @@ describe("voice workflows through the public service MCP endpoint", () => {
     });
     expect(result.isError).not.toBe(true);
     const url = new URL(String(fetchMock.mock.calls.at(-1)?.[0]));
-    expect(url.searchParams.get("order_by")).toBe(`${deliveryField} asc`);
+    expect(url.searchParams.get("order_by")).toBe(`${deliveryField} asc, name asc`);
     const filters = JSON.parse(url.searchParams.get("filters")!);
     expect(filters).toEqual(expect.arrayContaining([
       [doctype, party, "=", id], [doctype, deliveryField, ">=", "2026-06-01"], [doctype, deliveryField, "<=", "2026-06-30"],
@@ -99,7 +99,8 @@ describe("voice workflows through the public service MCP endpoint", () => {
         expect(result.structuredContent).toHaveProperty("delivery_scope.item_delivery_check_complete", false);
       }
       const ordinary = await invokeTool(tool, { company: "Example Company", from_date: "2026-06-01", to_date: "2026-06-30" });
-      expect(ordinary.content).toHaveLength(1);
+      expect(ordinary.content).toHaveLength(2);
+      expect(JSON.parse(ordinary.content[1].text)).toHaveProperty("meta.complete");
       expect(JSON.parse(ordinary.content[0].text)).toEqual(rows);
     }
   });
@@ -236,7 +237,7 @@ describe("voice workflows through the public service MCP endpoint", () => {
 
     expect(result.isError).not.toBe(true);
     const transactionUrl = new URL(String(fetchMock.mock.calls.at(-1)?.[0]));
-    expect(transactionUrl.searchParams.get("order_by")).toBe("due_date asc");
+    expect(transactionUrl.searchParams.get("order_by")).toBe("due_date asc, name asc");
     expect(JSON.parse(transactionUrl.searchParams.get("filters")!)).toEqual([
       ["Sales Invoice", "company", "=", "Example Company"],
       ["Sales Invoice", "customer", "=", "CUS-001"],
@@ -392,7 +393,7 @@ describe("voice workflows through the public service MCP endpoint", () => {
         ["Sales Invoice", "outstanding_amount", ">", 0],
       ]));
       expect(filters.some((filter: unknown[]) => filter[1] === "posting_date")).toBe(false);
-      expect(url.searchParams.get("order_by")).toBe("due_date asc");
+      expect(url.searchParams.get("order_by")).toBe("due_date asc, name asc");
       return Response.json({ data: [{ name: "SINV-001", customer: "CUS-001", due_date: "2026-03-01", outstanding_amount: 100 }] });
     });
     vi.stubGlobal("fetch", fetchMock);

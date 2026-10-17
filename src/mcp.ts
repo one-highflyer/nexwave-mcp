@@ -4,6 +4,7 @@ import { z } from "zod";
 import { frappeGet, ensureFreshToken } from "./frappe";
 import { withMcpErrorBoundary } from "./mcp-boundary";
 import { listResult, searchRecords } from "./search";
+import { documentDetails } from "./document-details";
 import { structuredResult, ToolError } from "./tool-result";
 import { registerPartyTools } from "./party-tools";
 import { registerInsightTools } from "./insight-tools";
@@ -21,6 +22,11 @@ const INVOICE_FILTERS = {
   unpaid_only: z.boolean().optional().describe("True means submitted invoices with positive outstanding, including overdue and partly paid invoices. Use status All or omit status."),
   overdue_as_of: DATE.optional().describe("Submitted positive balances with due date before this date. Use status All or omit status. Do not set unpaid_only to false."),
 };
+const LIST_OPTIONS = {
+  offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0).describe("Start at this result offset. Repeat the same filters and ordering with next_offset. Records can change between calls."),
+  search_mode: z.enum(["ranked", "literal"]).optional().describe("Ranked name candidates are bounded. Use literal for complete pagination through text matches and for counts with a search."),
+  summary: z.enum(["count", "totals"]).optional().describe("Return a count or monetary totals across all matching records instead of a page. Totals require company and currency; payment totals use company currency. Uses literal search. Not a page total or historical balance."),
+};
 const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact document currency. Required when ranking native currency amounts.");
 
 const READABLE_DOCTYPES = {
@@ -30,7 +36,7 @@ const READABLE_DOCTYPES = {
   "Sales Invoice": ["name", "company", "customer", "customer_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount"],
   "Purchase Order": ["name", "company", "supplier", "supplier_name", "transaction_date", "schedule_date", "status", "currency", "grand_total", "base_grand_total", "per_received", "per_billed"],
   "Purchase Invoice": ["name", "company", "supplier", "supplier_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount"],
-  "Payment Entry": ["name", "posting_date", "company", "payment_type", "party_type", "party", "party_name", "mode_of_payment", "paid_from", "paid_to", "paid_amount", "received_amount", "unallocated_amount", "reference_no", "reference_date", "status"],
+  "Payment Entry": ["name", "posting_date", "company", "payment_type", "party_type", "party", "party_name", "mode_of_payment", "paid_from", "paid_to", "paid_from_account_currency", "paid_to_account_currency", "paid_amount", "received_amount", "unallocated_amount", "reference_no", "reference_date", "status"],
   "Bank Transaction": ["name", "date", "company", "bank_account", "description", "reference_number", "transaction_id", "transaction_type", "currency", "deposit", "withdrawal", "allocated_amount", "unallocated_amount", "status", "party_type", "party"],
 } as const;
 
@@ -52,16 +58,16 @@ export function createNexWaveServer(): McpServer {
     "list_companies",
     {
       description: "List companies that the signed-in NexWave user can access.",
-      inputSchema: { search: SEARCH, limit: z.number().int().min(1).max(50).default(20) },
+      inputSchema: { search: SEARCH, ...LIST_OPTIONS, limit: z.number().int().min(1).max(50).default(20) },
     },
-    async ({ search, limit }) => {
+    async ({ search, limit, offset, search_mode, summary }) => {
       const props = await currentProps();
       return listResult(
         props,
         "Company",
         ["name", "company_name", "abbr", "default_currency", "country"],
         ["name", "company_name"],
-        { search, limit, directory: true, legalNames: true },
+        { search, limit, offset, search_mode, summary, directory: true, legalNames: true },
       );
     },
   );
@@ -72,18 +78,19 @@ export function createNexWaveServer(): McpServer {
       description: "Search customers by spoken name, partial name or exact code. Confirm candidates before using an ID. For a customer's balance prefer get_party_balance. Unspecified filters must be omitted.",
       inputSchema: {
         search: SEARCH,
+        ...LIST_OPTIONS,
         include_disabled: z.boolean().optional().describe("Set only when the user explicitly requests disabled customers. Omit to preserve the existing customer-list scope."),
         limit: z.number().int().min(1).max(50).default(20),
       },
     },
-    async ({ search, limit, include_disabled }) => {
+    async ({ search, limit, include_disabled, offset, search_mode, summary }) => {
       const props = await currentProps();
       return listResult(
         props,
         "Customer",
         [...READABLE_DOCTYPES.Customer],
         ["name", "customer_name"],
-        { search, limit, directory: true, legalNames: true, filters: include_disabled === false ? [["Customer", "disabled", "=", 0]] : [] },
+        { search, limit, offset, search_mode, summary, directory: true, legalNames: true, filters: include_disabled === false ? [["Customer", "disabled", "=", 0]] : [] },
       );
     },
   );
@@ -94,12 +101,13 @@ export function createNexWaveServer(): McpServer {
       description: "Search items by spoken name, partial name or exact code. item_group is an exact group ID. Confirm candidates before using an item ID in reports. This is not a stock balance or sales ranking.",
       inputSchema: {
         search: SEARCH,
+        ...LIST_OPTIONS,
         item_group: z.string().trim().min(1).max(140).optional(),
         include_disabled: z.boolean().default(false),
         limit: z.number().int().min(1).max(50).default(20),
       },
     },
-    async ({ search, item_group, include_disabled, limit }) => {
+    async ({ search, item_group, include_disabled, limit, offset, search_mode, summary }) => {
       const props = await currentProps();
       const filters: unknown[] = [];
       if (item_group) filters.push(["Item", "item_group", "=", item_group]);
@@ -109,7 +117,7 @@ export function createNexWaveServer(): McpServer {
         "Item",
         [...READABLE_DOCTYPES.Item],
         ["name", "item_name"],
-        { search, limit, filters, directory: true },
+        { search, limit, offset, search_mode, summary, filters, directory: true },
       );
     },
   );
@@ -311,6 +319,7 @@ export function createNexWaveServer(): McpServer {
     extraSchema: {
       company: z.string().trim().min(1).max(140).optional(),
       bank_account: z.string().trim().min(1).max(140).optional(),
+      currency: CURRENCY,
       status: statusSchema(["Pending", "Settled", "Unreconciled", "Reconciled", "Cancelled"]),
       from_date: DATE.optional(),
       to_date: DATE.optional(),
@@ -362,12 +371,14 @@ export function createNexWaveServer(): McpServer {
           "Bank Transaction",
         ]),
         name: z.string().trim().min(1).max(140),
+        detail_offset: LIST_OPTIONS.offset,
+        detail_limit: z.number().int().min(1).max(50).default(20).describe("Maximum item or payment-reference rows returned. Use detail_meta next_offset to continue."),
       },
     },
-    async ({ doctype, name }) => {
+    async ({ doctype, name, detail_offset, detail_limit }) => {
       const props = await currentProps();
       const data = await frappeGet<Record<string, unknown>>(props, doctype, name);
-      return textResult(selectFields(data, READABLE_DOCTYPES[doctype as ReadableDoctype]));
+      return structuredResult({ ...selectFields(data, READABLE_DOCTYPES[doctype as ReadableDoctype]), ...documentDetails(doctype, data, detail_offset, detail_limit) });
     },
   );
 
@@ -432,9 +443,10 @@ function registerLookupTool(
   server.registerTool(
     toolName,
     {
-      description: `${options.description} Use search for ${options.directory ? "names or record codes" : "document text"}; exact filters require IDs returned by tools. ${options.party ? `For a spoken party name use ${options.party.field}_query; the server resolves it before filtering. ` : ""}Omit unspecified filters. List rows are examples, never an aggregate total.${options.sortFields?.includes("base_grand_total") ? " For largest invoices or orders use base_grand_total with company, so currencies are comparable." : ""}`,
+      description: `${options.description} Use search for ${options.directory ? "names or record codes" : "document text"}; exact filters require IDs returned by tools. ${options.party ? `For a spoken party name use ${options.party.field}_query; the server resolves it before filtering. ` : ""}Omit unspecified filters. List rows are one page, never an aggregate total. For counts or totals across all matches use summary. Keep filters and ordering unchanged when following next_offset.${options.sortFields?.includes("base_grand_total") ? " For largest invoices or orders use base_grand_total with company, so currencies are comparable." : ""}`,
       inputSchema: {
         search: SEARCH,
+        ...LIST_OPTIONS,
         limit: z.number().int().min(1).max(50).default(20),
         ...options.extraSchema,
         ...(options.party ? { [`${options.party.field}_query`]: z.string().trim().min(1).max(140).optional().describe("Spoken party name. Resolves to an exact party filter or asks for confirmation. Do not also set the exact party filter.") } : {}),
@@ -454,13 +466,16 @@ function registerLookupTool(
       }
       const search = typeof input.search === "string" ? input.search : undefined;
       const limit = typeof input.limit === "number" ? input.limit : 20;
+      const offset = typeof input.offset === "number" ? input.offset : 0;
+      const search_mode = input.search_mode as "ranked" | "literal" | undefined;
+      const summary = input.summary as "count" | "totals" | undefined;
       const defaultOrder = options.orderBy ?? "modified desc";
       const sortBy = typeof input.sort_by === "string" ? input.sort_by : defaultOrder.split(" ")[0];
       const sortOrder = input.sort_order ?? defaultOrder.split(" ")[1];
-      if (["grand_total", "outstanding_amount"].includes(sortBy) && !args.currency) {
+      if (!summary && ["grand_total", "outstanding_amount"].includes(sortBy) && !args.currency) {
         throw new ToolError("INVALID_ARGUMENT", "Ranking native amounts requires currency. For invoice or order value across currencies use base_grand_total and company.");
       }
-      if (sortBy === "base_grand_total" && !args.company) throw new ToolError("INVALID_ARGUMENT", "Ranking company-currency amounts requires one company.");
+      if (!summary && sortBy === "base_grand_total" && !args.company) throw new ToolError("INVALID_ARGUMENT", "Ranking company-currency amounts requires one company.");
       const props = await currentProps();
       if (options.party) {
         const { doctype: partyType, field } = options.party;
@@ -483,7 +498,7 @@ function registerLookupTool(
         doctype,
         options.fields,
         options.searchFields,
-        { search, limit, filters, orderBy: `${sortBy} ${sortOrder}`, directory: options.directory, legalNames: options.legalNames },
+        { search, limit, offset, search_mode, summary, filters, orderBy: `${sortBy} ${sortOrder}`, directory: options.directory, legalNames: options.legalNames },
       );
       if ((doctype === "Sales Order" || doctype === "Purchase Order")
         && (args.pending_receipt || args.pending_delivery || args.delivery_from_date || args.delivery_to_date || args.overdue_as_of)) {
@@ -493,14 +508,15 @@ function registerLookupTool(
           note: "These are order-level examples. Item delivery dates and item receipt/delivery completion were not checked. Even an empty result cannot establish that there are no overdue item deliveries.",
         };
         result.structuredContent = { ...result.structuredContent, delivery_scope: deliveryScope };
-        // Keep the first legacy array unchanged, and make the limit visible to text-only clients too.
-        result.content.push({ type: "text", text: JSON.stringify({ delivery_scope: deliveryScope }) });
       }
-      if (sortBy === "base_grand_total") {
+      if (!summary && sortBy === "base_grand_total") {
         const company = await frappeGet<{ default_currency: string }>(props, "Company", String(args.company));
         if (typeof company.default_currency !== "string" || !company.default_currency.trim()) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
         result.structuredContent = { ...result.structuredContent, ranking: { field: sortBy, currency: company.default_currency, company: args.company } };
       }
+      // Keep the legacy first text block, then expose the final metadata to text-only clients.
+      const { records: _records, ...metadata } = result.structuredContent;
+      result.content[1] = { type: "text", text: JSON.stringify(metadata) };
       return result;
     },
   );

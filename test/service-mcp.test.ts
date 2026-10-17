@@ -176,7 +176,7 @@ describe("service MCP authentication", () => {
     const upstream = new URL(String(url));
     expect(upstream.pathname).toBe("/api/resource/Purchase%20Order");
     expect(upstream.searchParams.get("limit_page_length")).toBe("25");
-    expect(upstream.searchParams.get("order_by")).toBe("transaction_date desc");
+    expect(upstream.searchParams.get("order_by")).toBe("transaction_date desc, name asc");
     expect(JSON.parse(upstream.searchParams.get("filters") ?? "[]")).toEqual([
       ["Purchase Order", "company", "=", "Example Company"],
       ["Purchase Order", "supplier", "=", "SUP-00001"],
@@ -230,7 +230,7 @@ describe("service MCP authentication", () => {
     vi.stubGlobal("fetch", fetchMock);
     await invokeTool("list_purchase_invoices", { company: "Example Company", unpaid_only: true, sort_by: "due_date", sort_order: "asc", limit: 1 });
     const url = new URL(String(fetchMock.mock.calls[0][0]));
-    expect(url.searchParams.get("order_by")).toBe("due_date asc");
+    expect(url.searchParams.get("order_by")).toBe("due_date asc, name asc");
     expect(JSON.parse(url.searchParams.get("filters")!)).toEqual([
       ["Purchase Invoice", "company", "=", "Example Company"],
       ["Purchase Invoice", "docstatus", "=", 1],
@@ -391,6 +391,74 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[0].text)).toEqual([{ name: "SUP-001", supplier_name: "Example Supplier" }]);
     expect(result.structuredContent).toMatchObject({ meta: { match_status: "matched", count: 1 } });
   });
+
+  it("pages invoices and exposes the final metadata to text-only clients", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [{ name: "INV-003" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("list_sales_invoices", { offset: 2, limit: 1, customer: "C-001", sort_by: "name", sort_order: "asc" });
+    expect(result.isError).not.toBe(true);
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.searchParams.get("limit_start")).toBe("2");
+    expect(url.searchParams.get("order_by")).toBe("name asc");
+    expect(JSON.parse(result.content[1].text)).toMatchObject({ meta: { offset: 2, next_offset: 3, complete: false, warning: expect.any(String) } });
+  });
+
+  it("uses the same scope for count and total modes through the service route", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [{ record_count: 80, total_grand_total: 9000 }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("list_purchase_invoices", { summary: "totals", company: "Example Company", currency: "NZD", supplier: "SUP-1", docstatus: 1, from_date: "2026-09-01", search: "INV", offset: 60, limit: 1 });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ count: 80, totals: { grand_total: 9000 }, complete: true, currency: "NZD" });
+    const url = new URL(String(fetchMock.mock.calls[0][0]));
+    expect(url.searchParams.has("limit_start")).toBe(false);
+    expect(JSON.parse(url.searchParams.get("filters")!)).toEqual(expect.arrayContaining([
+      ["Purchase Invoice", "supplier", "=", "SUP-1"], ["Purchase Invoice", "docstatus", "=", 1], ["Purchase Invoice", "currency", "=", "NZD"], ["Purchase Invoice", "posting_date", ">=", "2026-09-01"],
+    ]));
+  });
+
+  it("returns base payment totals with company currency and no claim of net cash", async () => {
+    const fetchMock = vi.fn(async (input: string) => new URL(input).pathname.includes("/Company/")
+      ? Response.json({ data: { default_currency: "NZD" } })
+      : Response.json({ data: [{ record_count: 2, total_base_paid_amount: 100, total_base_received_amount: 100 }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("list_payments", { summary: "totals", company: "Example Company" });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ count: 2, currency: "NZD", totals: { base_paid_amount: 100, base_received_amount: 100 } });
+    expect(result.content[0].text).toContain("not historical balances, recognised revenue, or net cash");
+  });
+
+  it("returns selected child rows through the parent document endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: { name: "PAY-1", paid_amount: 42, paid_from_account_currency: "USD", paid_to_account_currency: "NZD", private_custom: "hidden", references: [
+      { reference_doctype: "Sales Invoice", reference_name: "INV-1", allocated_amount: 12 },
+      { reference_doctype: "Sales Invoice", reference_name: "INV-2", allocated_amount: 30, private_custom: "hidden" },
+    ] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("get_document", { doctype: "Payment Entry", name: "PAY-1", detail_offset: 1, detail_limit: 1 });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ paid_from_account_currency: "USD", paid_to_account_currency: "NZD", references: [{ reference_name: "INV-2", allocated_amount: 30 }], detail_meta: { references: { count: 2, next_offset: null, complete: false } } });
+    expect(result.content[0].text).not.toContain("hidden");
+    expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe("/api/resource/Payment%20Entry/PAY-1");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("continues detailed report rows through the public tool schema", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: { columns: [{ fieldname: "voucher_no", label: "Voucher" }], result: [{ voucher_no: "A" }, { voucher_no: "B" }, { voucher_no: "C" }] } })));
+    const result = await invokeTool("get_general_ledger", { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-30", offset: 1, limit: 1 });
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ rows: [{ voucher_no: "B" }], row_count: 3, next_offset: 2, complete: false, warning: expect.any(String) });
+  });
+
+  it.each([
+    ["list_suppliers", { offset: -1 }], ["list_sales_invoices", { offset: 1.5 }],
+    ["get_document", { doctype: "Sales Invoice", name: "INV-1", detail_limit: 51 }],
+    ["get_general_ledger", { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-30", offset: -1 }],
+  ] as const)("rejects invalid page bounds for %s before a request", async (tool, args) => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, args);
+    expect(result.isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
 });
 
 async function invokeTool(name: string, args: Record<string, unknown>) {
