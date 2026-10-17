@@ -228,7 +228,7 @@ it("continues report pages without losing a total row at the end", () => {
   expect(first.warning).toContain("one report page");
   const last = normaliseReportResult("Trial Balance", {}, report, 2, 2);
   expect(last.rows).toEqual([{ account: "Total", is_total_row: true }]);
-  expect(last).toMatchObject({ next_offset: null, complete: false });
+  expect(last).toMatchObject({ next_offset: null, truncated: false, complete: false });
   expect(normaliseReportResult("Trial Balance", {}, report, 2, 10)).toMatchObject({ rows: [], next_offset: null, complete: false });
 });
 

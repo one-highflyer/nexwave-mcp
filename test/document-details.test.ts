@@ -8,7 +8,7 @@ it.each(["Sales Invoice", "Purchase Invoice", "Sales Order", "Purchase Order"])(
   expect(first.detail_meta).toMatchObject({ items: { count: 3, next_offset: 2, complete: false } });
   const last = documentDetails(doctype, { items }, 2, 2);
   expect(last.items).toEqual([{ idx: 2, item_code: "ITEM-2", qty: 3, rate: 12, amount: 36 }]);
-  expect(last.detail_meta).toMatchObject({ items: { next_offset: null, complete: false } });
+  expect(last.detail_meta).toMatchObject({ items: { next_offset: null, complete: false, warning: "This is the final detail page. Combine it with earlier pages to obtain all returned rows." } });
 });
 
 it("returns payment invoice allocations and bank links without private fields", () => {

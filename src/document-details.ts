@@ -21,7 +21,7 @@ export function documentDetails(doctype: string, document: Record<string, unknow
     if (!Array.isArray(rows) || !rows.every((row) => row && typeof row === "object" && !Array.isArray(row))) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave returned an invalid document detail table.");
     details[table] = rows.slice(offset, offset + limit).map((row: Record<string, unknown>) => Object.fromEntries(fields.filter((field) => field in row && (row[field] === null || ["string", "number", "boolean"].includes(typeof row[field]))).map((field) => [field, row[field]])));
     meta[table] = { offset, limit, count: rows.length, next_offset: offset + limit < rows.length ? offset + limit : null, complete: offset === 0 && rows.length > 0 && rows.length <= limit,
-      warning: rows.length === 0 ? "No detail rows were returned. The table may be empty or hidden by field permissions; completeness cannot be confirmed." : offset > 0 || rows.length > limit ? "Only one detail page is shown. Repeat with detail_offset set to next_offset and the same detail_limit." : null };
+      warning: rows.length === 0 ? "No detail rows were returned. The table may be empty or hidden by field permissions; completeness cannot be confirmed." : offset + limit < rows.length ? "Only one detail page is shown. Repeat with detail_offset set to next_offset and the same detail_limit." : offset > 0 ? "This is the final detail page. Combine it with earlier pages to obtain all returned rows." : null };
   }
   return { ...details, detail_meta: meta };
 }

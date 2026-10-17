@@ -447,7 +447,7 @@ export function normaliseReportResult(
   const rows = allRows.slice(offset, offset + limit).map((row) => sanitiseRow(row, allowedFields));
   const summary = (data.report_summary ?? []).slice(0, 20).map(sanitiseSummary);
   const warnings = [
-    ...(offset > 0 || allRows.length > rows.length ? ["These rows are one report page. Do not compute full-report totals from this page. Follow next_offset with identical filters."] : []),
+    ...(offset > 0 || allRows.length > rows.length ? ["These rows are one report page. Do not compute full-report totals from this page. If next_offset is not null, follow it with identical filters; otherwise combine this page with earlier pages."] : []),
     ...((data.columns?.length ?? 0) > 100 ? ["Report columns are limited to the first 100."] : []),
     ...((data.report_summary?.length ?? 0) > 20 ? ["Report summary entries are limited to the first 20."] : []),
   ];
@@ -461,7 +461,7 @@ export function normaliseReportResult(
     row_count: allRows.length,
     offset,
     next_offset: offset + rows.length < allRows.length ? offset + rows.length : null,
-    truncated: allRows.length > rows.length,
+    truncated: offset + rows.length < allRows.length,
     complete: warnings.length === 0,
     warning: warnings.length ? warnings.join(" ") : null,
     ...(typeof data.execution_time === "number" ? { execution_time: data.execution_time } : {}),
