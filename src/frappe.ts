@@ -94,11 +94,15 @@ export async function frappeList<T>(
   props: NexWaveAuthProps,
   doctype: string,
   fields: string[],
-  options: { limit?: number; filters?: unknown[]; orFilters?: unknown[]; orderBy?: string } = {},
+  options: { limit?: number; offset?: number; filters?: unknown[]; orFilters?: unknown[]; orderBy?: string } = {},
 ): Promise<T[]> {
   const url = new URL(`/api/resource/${encodeURIComponent(doctype)}`, props.baseUrl);
   url.searchParams.set("fields", JSON.stringify(fields));
   url.searchParams.set("limit_page_length", String(Math.min(Math.max(options.limit ?? 20, 1), 50)));
+  if (options.offset !== undefined) {
+    if (!Number.isSafeInteger(options.offset) || options.offset < 0) throw new ToolError("INVALID_ARGUMENT", "offset must be a non-negative safe integer.");
+    url.searchParams.set("limit_start", String(options.offset));
+  }
   if (options.filters?.length) url.searchParams.set("filters", JSON.stringify(options.filters));
   if (options.orFilters?.length) url.searchParams.set("or_filters", JSON.stringify(options.orFilters));
   if (options.orderBy) url.searchParams.set("order_by", options.orderBy);

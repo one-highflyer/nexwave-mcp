@@ -83,6 +83,20 @@ it.each([false, true])("preserves OAuth errors even with service compatibility h
   expect(fetchMock).toHaveBeenCalledOnce();
 });
 
+it("exposes pagination and complete counts to OAuth clients", async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(Response.json({ data: [{ name: "INV-21" }] }))
+    .mockResolvedValueOnce(Response.json({ data: [{ record_count: 81 }] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const page = await callTool(props, "list_sales_invoices", { offset: 20, limit: 1 });
+  expect(page.isError).not.toBe(true);
+  expect(JSON.parse(page.content[1].text)).toMatchObject({ meta: { offset: 20, next_offset: 21, complete: false } });
+  expect(new URL(String(fetchMock.mock.calls[0][0])).searchParams.get("limit_start")).toBe("20");
+  const count = await callTool(props, "list_sales_invoices", { summary: "count", offset: 20, limit: 1 });
+  expect(count.isError).not.toBe(true);
+  expect(JSON.parse(count.content[0].text)).toMatchObject({ count: 81, complete: true });
+  expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer old-token");
+});
+
 async function callTool(authProps: NexWaveOAuthAuthProps, name: string, args: Record<string, unknown>, compatibilityHeader = false) {
   // Simulate the trusted context supplied by the OAuth provider after verification.
   const context = {
