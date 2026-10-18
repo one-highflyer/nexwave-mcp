@@ -1,3 +1,4 @@
+import { registerReadTool } from "./tool-contract";
 import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
@@ -25,17 +26,18 @@ const INVOICE_FILTERS = {
 const LIST_OPTIONS = {
   offset: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0).describe("Start at this result offset. Repeat the same filters and ordering with next_offset. Records can change between calls."),
   search_mode: z.enum(["ranked", "literal"]).optional().describe("Ranked name candidates are bounded. Use literal for complete pagination through text matches and for counts with a search."),
-  summary: z.enum(["count", "totals"]).optional().describe("Return a count or monetary totals across all matching records instead of a page. Totals require company and currency; payment totals use company currency. Uses literal search. Not a page total or historical balance."),
+  summary: z.enum(["count"]).optional().describe("Return a count across all matching records instead of a page. Use literal search mode when a directory search is supplied."),
 };
-const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact document currency. Required when ranking native currency amounts.");
+const TRANSACTION_SUMMARY = z.enum(["count", "totals"]).optional().describe("Return all-match counts or monetary totals instead of a page. Totals require company and document currency; payment totals require company and use company currency. Not a historical balance.");
+const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact document currency. Required for grand_total ranking and invoice/order totals. Outstanding amounts use party_account_currency instead.");
 
 const READABLE_DOCTYPES = {
   Customer: ["name", "customer_name", "customer_group", "territory", "disabled"],
   Item: ["name", "item_name", "item_group", "stock_uom", "disabled"],
   "Sales Order": ["name", "company", "customer", "customer_name", "transaction_date", "delivery_date", "status", "currency", "grand_total", "base_grand_total"],
-  "Sales Invoice": ["name", "company", "customer", "customer_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount"],
+  "Sales Invoice": ["name", "company", "customer", "customer_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount", "party_account_currency"],
   "Purchase Order": ["name", "company", "supplier", "supplier_name", "transaction_date", "schedule_date", "status", "currency", "grand_total", "base_grand_total", "per_received", "per_billed"],
-  "Purchase Invoice": ["name", "company", "supplier", "supplier_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount"],
+  "Purchase Invoice": ["name", "company", "supplier", "supplier_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount", "party_account_currency"],
   "Payment Entry": ["name", "posting_date", "company", "payment_type", "party_type", "party", "party_name", "mode_of_payment", "paid_from", "paid_to", "paid_from_account_currency", "paid_to_account_currency", "paid_amount", "received_amount", "unallocated_amount", "reference_no", "reference_date", "status"],
   "Bank Transaction": ["name", "date", "company", "bank_account", "description", "reference_number", "transaction_id", "transaction_type", "currency", "deposit", "withdrawal", "allocated_amount", "unallocated_amount", "status", "party_type", "party"],
 } as const;
@@ -45,16 +47,16 @@ type ReadableDoctype = keyof typeof READABLE_DOCTYPES;
 export function createNexWaveServer(): McpServer {
   const server = new McpServer({ name: "NexWave", version: "0.1.0" });
 
-  server.registerTool(
+  registerReadTool(server,
     "get_current_user",
-    { description: "Show the NexWave site and user connected to this MCP session." },
+    { description: "Show the NexWave site and user connected to this MCP session.", inputSchema: {} },
     async () => {
       const props = getAuthProps();
-      return textResult({ site: props.siteName, site_url: props.baseUrl, user: props.user });
+      return structuredResult({ site: props.siteName, site_url: props.baseUrl, user: props.user });
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "list_companies",
     {
       description: "List companies that the signed-in NexWave user can access.",
@@ -72,7 +74,7 @@ export function createNexWaveServer(): McpServer {
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "list_customers",
     {
       description: "Search customers by spoken name, partial name or exact code. Confirm candidates before using an ID. For a customer's balance prefer get_party_balance. Unspecified filters must be omitted.",
@@ -95,7 +97,7 @@ export function createNexWaveServer(): McpServer {
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "list_items",
     {
       description: "Search items by spoken name, partial name or exact code. item_group is an exact group ID. Confirm candidates before using an item ID in reports. This is not a stock balance or sales ranking.",
@@ -214,6 +216,7 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_sales_invoices", "Sales Invoice", {
+    totals: true,
     party: { doctype: "Customer", field: "customer" },
     description: "List sales invoices visible to the signed-in NexWave user.",
     fields: [...READABLE_DOCTYPES["Sales Invoice"]],
@@ -223,6 +226,7 @@ export function createNexWaveServer(): McpServer {
       customer: EXACT_PARTY,
       status: SALES_INVOICE_STATUS,
       currency: CURRENCY,
+      party_account_currency: z.string().trim().min(3).max(20).optional().describe("Exact currency of the receivable/payable account. Required when sorting outstanding_amount; it can differ from document currency."),
       ...INVOICE_FILTERS,
       from_date: DATE.optional(),
       to_date: DATE.optional(),
@@ -239,6 +243,7 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_purchase_invoices", "Purchase Invoice", {
+    totals: true,
     party: { doctype: "Supplier", field: "supplier" },
     description: "List purchase invoices visible to the signed-in NexWave user.",
     fields: [...READABLE_DOCTYPES["Purchase Invoice"]],
@@ -248,6 +253,7 @@ export function createNexWaveServer(): McpServer {
       supplier: EXACT_PARTY,
       status: PURCHASE_INVOICE_STATUS,
       currency: CURRENCY,
+      party_account_currency: z.string().trim().min(3).max(20).optional().describe("Exact currency of the receivable/payable account. Required when sorting outstanding_amount; it can differ from document currency."),
       ...INVOICE_FILTERS,
       from_date: DATE.optional(),
       to_date: DATE.optional(),
@@ -264,6 +270,7 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_purchase_orders", "Purchase Order", {
+    totals: true,
     party: { doctype: "Supplier", field: "supplier" },
     description: "List purchase orders visible to the signed-in NexWave user. Order-level records only; item delivery dates and remaining item receipts are not checked.",
     fields: [...READABLE_DOCTYPES["Purchase Order"]],
@@ -288,6 +295,7 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_payments", "Payment Entry", {
+    totals: true,
     description: "List payment entries visible to the signed-in NexWave user.",
     fields: [...READABLE_DOCTYPES["Payment Entry"]],
     searchFields: ["name", "party_name", "reference_no"],
@@ -313,6 +321,7 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_bank_transactions", "Bank Transaction", {
+    totals: true,
     description: "List imported bank transactions visible to the signed-in NexWave user.",
     fields: [...READABLE_DOCTYPES["Bank Transaction"]],
     searchFields: ["name", "description", "reference_number"],
@@ -335,6 +344,7 @@ export function createNexWaveServer(): McpServer {
   });
 
   registerLookupTool(server, "list_sales_orders", "Sales Order", {
+    totals: true,
     description: "Search sales orders by order number or customer, with date, status and company filters. Order-level records only; item delivery dates and remaining item deliveries are not checked.",
     fields: [...READABLE_DOCTYPES["Sales Order"]],
     searchFields: ["name", "customer_name"],
@@ -355,7 +365,7 @@ export function createNexWaveServer(): McpServer {
     sortFields: ["transaction_date", "delivery_date", "base_grand_total", "grand_total", "name"],
   });
 
-  server.registerTool(
+  registerReadTool(server,
     "get_document",
     {
       description: "Get one read-only NexWave business document by its type and exact name.",
@@ -437,16 +447,18 @@ function registerLookupTool(
     directory?: boolean;
     legalNames?: boolean;
     sortFields?: [string, ...string[]];
+    totals?: boolean;
     party?: { doctype: "Customer" | "Supplier"; field: "customer" | "supplier" };
   },
 ): void {
-  server.registerTool(
+  registerReadTool(server,
     toolName,
     {
-      description: `${options.description} Use search for ${options.directory ? "names or record codes" : "document text"}; exact filters require IDs returned by tools. ${options.party ? `For a spoken party name use ${options.party.field}_query; the server resolves it before filtering. ` : ""}Omit unspecified filters. List rows are one page, never an aggregate total. For counts or totals across all matches use summary. Keep filters and ordering unchanged when following next_offset.${options.sortFields?.includes("base_grand_total") ? " For largest invoices or orders use base_grand_total with company, so currencies are comparable." : ""}`,
+      description: `${options.description} Use search for ${options.directory ? "names or record codes" : "document text"}; exact filters require IDs returned by tools. ${options.party ? `For a spoken party name use ${options.party.field}_query; the server resolves it before filtering. ` : ""}Omit unspecified filters. List rows are one page, never an aggregate total. ${options.totals ? "For counts or monetary totals across all matches use summary." : "For a count across all matches use summary count."} Keep filters and ordering unchanged when following next_offset.${options.sortFields?.includes("base_grand_total") ? " For largest invoices or orders use base_grand_total with company, so currencies are comparable." : ""}`,
       inputSchema: {
         search: SEARCH,
         ...LIST_OPTIONS,
+        ...(options.totals ? { summary: TRANSACTION_SUMMARY } : {}),
         limit: z.number().int().min(1).max(50).default(20),
         ...options.extraSchema,
         ...(options.party ? { [`${options.party.field}_query`]: z.string().trim().min(1).max(140).optional().describe("Spoken party name. Resolves to an exact party filter or asks for confirmation. Do not also set the exact party filter.") } : {}),
@@ -472,8 +484,11 @@ function registerLookupTool(
       const defaultOrder = options.orderBy ?? "modified desc";
       const sortBy = typeof input.sort_by === "string" ? input.sort_by : defaultOrder.split(" ")[0];
       const sortOrder = input.sort_order ?? defaultOrder.split(" ")[1];
-      if (!summary && ["grand_total", "outstanding_amount"].includes(sortBy) && !args.currency) {
+      if (!summary && sortBy === "grand_total" && !args.currency) {
         throw new ToolError("INVALID_ARGUMENT", "Ranking native amounts requires currency. For invoice or order value across currencies use base_grand_total and company.");
+      }
+      if (!summary && sortBy === "outstanding_amount" && !args.party_account_currency) {
+        throw new ToolError("INVALID_ARGUMENT", "Ranking outstanding_amount requires party_account_currency. Document currency does not define the balance currency.");
       }
       if (!summary && sortBy === "base_grand_total" && !args.company) throw new ToolError("INVALID_ARGUMENT", "Ranking company-currency amounts requires one company.");
       const props = await currentProps();
@@ -493,6 +508,7 @@ function registerLookupTool(
       }
       const filters = options.filters(args);
       if (args.currency) filters.push([doctype, "currency", "=", args.currency]);
+      if (args.party_account_currency) filters.push([doctype, "party_account_currency", "=", args.party_account_currency]);
       const result = await listResult(
         props,
         doctype,
@@ -512,7 +528,11 @@ function registerLookupTool(
       if (!summary && sortBy === "base_grand_total") {
         const company = await frappeGet<{ default_currency: string }>(props, "Company", String(args.company));
         if (typeof company.default_currency !== "string" || !company.default_currency.trim()) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The company currency could not be confirmed.");
-        result.structuredContent = { ...result.structuredContent, ranking: { field: sortBy, currency: company.default_currency, company: args.company } };
+        result.structuredContent = { ...result.structuredContent, ranking: { field: sortBy, currency: company.default_currency, currency_field: "default_currency", company: args.company } };
+      }
+      if (!summary && (sortBy === "grand_total" || sortBy === "outstanding_amount")) {
+        const currencyField = sortBy === "outstanding_amount" ? "party_account_currency" : "currency";
+        result.structuredContent = { ...result.structuredContent, ranking: { field: sortBy, currency: args[currencyField], currency_field: currencyField, ...(args.company ? { company: args.company } : {}) } };
       }
       // Keep the legacy first text block, then expose the final metadata to text-only clients.
       const { records: _records, ...metadata } = result.structuredContent;
@@ -527,10 +547,4 @@ function selectFields(
   fields: readonly string[],
 ): Record<string, unknown> {
   return Object.fromEntries(fields.filter((field) => field in value).map((field) => [field, value[field]]));
-}
-
-function textResult(value: unknown) {
-  return {
-    content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
-  };
 }

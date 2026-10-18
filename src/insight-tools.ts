@@ -1,3 +1,4 @@
+import { registerReadTool } from "./tool-contract";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { frappeGet, frappeRunReport, type FrappeReportResult } from "./frappe";
@@ -10,7 +11,7 @@ const NAME = z.string().trim().min(1).max(140);
 const LIMIT = z.number().int().min(1).max(20).default(5);
 
 export function registerInsightTools(server: McpServer, getProps: () => Promise<NexWaveAuthProps>): void {
-  server.registerTool("get_sales_summary", {
+  registerReadTool(server, "get_sales_summary", {
     description: "Summarise submitted sales invoice net revenue, including returns and excluding tax, by customer, item, item group, or month. Totals and rankings use all permission-visible report rows before the result limit. Use for sales breakdowns or best-selling products/services by revenue. This is not profit, cash receipts or brand analysis.",
     inputSchema: {
       company: NAME, ...PERIOD_SCHEMA,
@@ -33,7 +34,7 @@ export function registerInsightTools(server: McpServer, getProps: () => Promise<
     return structuredResult({ company, from_date, to_date, currency: companyRecord.default_currency.trim(), ...summariseSales(report, group_by, limit) });
   });
 
-  server.registerTool("get_stock_risk", {
+  registerReadTool(server, "get_stock_risk", {
     description: "Check existing item/warehouse stock rows against configured per-warehouse reorder levels using Stock Projected Qty. Coverage is partial: missing Bins and warehouse-group reorder rules are not assessed. Never conclude all stock is safe. Missing reorder settings mean risk is unknown. No date range is needed. A user-specified quantity_threshold checks actual quantity strictly below that threshold in each item's stock UOM.",
     inputSchema: {
       company: NAME, item_code: NAME.optional(), warehouse: NAME.optional(), item_group: NAME.optional(),
