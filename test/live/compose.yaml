@@ -1,0 +1,40 @@
+# API-only disposable site. No scheduler, email, or external integration workers.
+x-backend: &backend
+  image: frappe/erpnext:v15.109.0@sha256:f0602a6917f39323c4d4d370c0c54aa2132d1137d2e2d3d8237f57df83c0565f
+  volumes:
+    - sites:/home/frappe/frappe-bench/sites
+    - ./seed.py:/home/frappe/frappe-bench/apps/frappe/frappe/live_mcp_seed.py:ro
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  db:
+    image: mariadb:10.6.25@sha256:6055d4ee6a6045626442cafe4feaf7419e878c65baf3af658265e24114af1cd7
+    environment:
+      MARIADB_ROOT_PASSWORD: ci-only
+    command: [--character-set-server=utf8mb4, --collation-server=utf8mb4_unicode_ci, --skip-character-set-client-handshake]
+    healthcheck:
+      test: [CMD, healthcheck.sh, --connect, --innodb_initialized]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    tmpfs:
+      - /var/lib/mysql
+  redis:
+    image: redis:7.4.7-alpine@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  backend:
+    <<: *backend
+    ports:
+      - '127.0.0.1::8000'
+    command: [/home/frappe/frappe-bench/env/bin/gunicorn, --chdir, /home/frappe/frappe-bench/sites, --bind, '0.0.0.0:8000', --workers, '2', --threads, '2', --timeout, '120', frappe.app:application]
+
+volumes:
+  sites:
