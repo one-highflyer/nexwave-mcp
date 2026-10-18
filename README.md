@@ -154,7 +154,7 @@ Directory tools search record IDs and display names. If the full phrase has no e
 
 Invoice and order tools accept `customer_query` or `supplier_query` for spoken names. Exact `customer` and `supplier` filters must use confirmed record IDs. Do not combine a spoken query and its exact filter. `search` is document text, not an unrestricted filter language. SQL wildcard characters in text are escaped.
 
-Use `unpaid_only: true` for submitted positive invoice balances, including partly paid and overdue invoices. Use `overdue_as_of` for due dates strictly before a date. Neither can be combined with `status`. Purchase orders support `pending_receipt: true` for submitted, open orders with less than 100 percent received. List tools expose bounded, allowlisted sorting; monetary invoice/order ranking uses `base_grand_total` with one company, or a native amount with an explicit `currency` filter.
+Use `unpaid_only: true` for submitted positive invoice balances, including partly paid and overdue invoices. Use `overdue_as_of` for due dates strictly before a date. Neither can be combined with `status`. Purchase orders support `pending_receipt: true` for submitted, open orders with less than 100 percent received. List tools expose bounded, allowlisted sorting. Rank invoice/order `base_grand_total` with one company, `grand_total` with an exact document `currency`, and invoice `outstanding_amount` with an exact `party_account_currency`.
 
 | Tool | Purpose |
 | --- | --- |
