@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate
+  worker:
+    name: Worker checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
@@ -44,3 +44,39 @@ jobs:
 
       - name: Build Cloudflare Worker
         run: npx wrangler deploy --dry-run
+
+  live-frappe:
+    name: Live Frappe
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test tools against a fresh Frappe site
+        run: npm run test:live
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+
+  validate:
+    name: Validate
+    if: always()
+    needs: [worker, live-frappe]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both test jobs
+        env:
+          WORKER_RESULT: ${{ needs.worker.result }}
+          FRAPPE_RESULT: ${{ needs.live-frappe.result }}
+        run: |
+          test "$WORKER_RESULT" = success
+          test "$FRAPPE_RESULT" = success

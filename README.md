@@ -278,8 +278,16 @@ Run the same validation used by CI:
 ```sh
 npm run check
 npm test
+npm run test:runtime
+npm run test:live # Requires Docker Compose v2
 npx wrangler deploy --dry-run
 ```
+
+`test:live` creates a fresh ERPNext v15.109.0 site, MariaDB, and Redis from pinned container images. It bundles the actual Worker entry point, applies D1 migrations, registers generated API tokens, and calls `/service/mcp`. A test-only network bridge forwards requests to the real local Frappe API. Expected amounts come from synthetic invoices and payments, not a second copy of the tool query.
+
+The suite checks list pages, counts, totals, document and account currencies, item and payment-reference details, receivables/payables, sales, General Ledger, and access for three API users (all companies, one company, and no accounting access). It uses fixed January 2025 dates. The script removes its containers, volumes, and temporary credentials on exit. CI needs no repository secrets. Neither credentials nor site logs are uploaded.
+
+The `Live Frappe` and `Worker checks` jobs must both pass for the required `Validate` check to pass. This first backend covers the standard ERPNext API contract; NexWave app overrides and OAuth browser login need separate coverage.
 
 The protected `main` branch requires a pull request, resolved review conversations, and a passing `Validate` check. Contributors need one approval; the current repository administrators can bypass the approval requirement.
 

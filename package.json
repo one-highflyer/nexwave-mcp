@@ -13,7 +13,8 @@
     "test:runtime": "node test/worker-runtime.mjs",
     "deploy": "wrangler deploy",
     "db:local": "wrangler d1 migrations apply NEXWAVE_MCP_DB --local",
-    "db:remote": "wrangler d1 migrations apply NEXWAVE_MCP_DB --remote"
+    "db:remote": "wrangler d1 migrations apply NEXWAVE_MCP_DB --remote",
+    "test:live": "bash test/live/run.sh"
   },
   "dependencies": {
     "@cloudflare/workers-oauth-provider": "^0.10.3",
