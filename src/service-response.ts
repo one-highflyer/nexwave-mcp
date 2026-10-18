@@ -72,7 +72,7 @@ function withErrorEnvelope(message: Record<string, unknown>): Record<string, unk
   let error = { code: "INTERNAL_ERROR", message: "The tool request could not be completed.", retryable: false };
   const first = Array.isArray(result.content) ? result.content[0] : undefined;
   const text = isRecord(first) && first.type === "text" && typeof first.text === "string" ? first.text : "";
-  if (text.startsWith("Input validation failed")) {
+  if (text.startsWith("Input validation failed") || text.startsWith("Input validation error")) {
     error = { code: "INVALID_ARGUMENT", message: "The tool arguments do not match its schema. Check required fields and allowed values.", retryable: false };
   } else {
     try {

@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   authenticateServiceMcpRequest,
@@ -457,6 +458,121 @@ describe("service MCP authentication", () => {
     const result = await invokeTool(tool, args);
     expect(result.isError).toBe(true);
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+
+  it.each([
+    ["list_sales_invoices", "Sales Invoice"], ["list_purchase_invoices", "Purchase Invoice"],
+  ])("uses party account currency for outstanding rankings in %s", async (tool, doctype) => {
+    const rows = [{ name: "INV-1", currency: "USD", party_account_currency: "NZD", grand_total: 100, outstanding_amount: 150 }];
+    const fetchMock = vi.fn(async (_input: string) => Response.json({ data: rows }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, { company: "Example Company", currency: "USD", party_account_currency: "NZD", sort_by: "outstanding_amount", sort_order: "desc" });
+    expect(result.isError).not.toBe(true);
+    const url = new URL(fetchMock.mock.calls[0][0]);
+    expect(JSON.parse(url.searchParams.get("fields")!)).toContain("party_account_currency");
+    expect(JSON.parse(url.searchParams.get("filters")!)).toEqual(expect.arrayContaining([
+      [doctype, "currency", "=", "USD"], [doctype, "party_account_currency", "=", "NZD"],
+    ]));
+    expect(url.searchParams.get("order_by")).toBe("outstanding_amount desc, name asc");
+    expect(JSON.parse(result.content[0].text)).toEqual(rows);
+    const ranking = { field: "outstanding_amount", currency: "NZD", currency_field: "party_account_currency", company: "Example Company" };
+    expect(result.structuredContent).toHaveProperty("ranking", ranking);
+    expect(JSON.parse(result.content[1].text)).toHaveProperty("ranking", ranking);
+  });
+
+  it.each(["list_sales_invoices", "list_purchase_invoices"])("rejects document currency alone for outstanding rankings in %s", async (tool) => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, { currency: "USD", sort_by: "outstanding_amount", customer_query: "Example" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("party_account_currency");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["Sales Invoice", "Purchase Invoice"])("retains the balance currency in get_document for %s", async (doctype) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: { name: "INV-1", currency: "USD", party_account_currency: "NZD", outstanding_amount: 150, items: [] } })));
+    const result = await invokeTool("get_document", { doctype, name: "INV-1" });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ currency: "USD", party_account_currency: "NZD", outstanding_amount: 150 });
+    expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+  });
+
+  it("keeps invoice totals in document currency when a party currency filter is also supplied", async () => {
+    const fetchMock = vi.fn(async (_input: string) => Response.json({ data: [{ record_count: 2, total_grand_total: 200 }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("list_sales_invoices", { company: "Example Company", currency: "USD", party_account_currency: "NZD", summary: "totals", sort_by: "outstanding_amount" });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ currency: "USD", totals: { grand_total: 200 }, count: 2 });
+    expect(result.structuredContent).not.toHaveProperty("ranking");
+    const url = new URL(fetchMock.mock.calls[0][0]);
+    expect(JSON.parse(url.searchParams.get("filters")!)).toContainEqual(["Sales Invoice", "party_account_currency", "=", "NZD"]);
+    expect(url.searchParams.get("fields")).not.toContain("outstanding_amount");
+  });
+
+  it.each([
+    ["grand_total", { currency: "USD" }, "USD", "currency"],
+    ["base_grand_total", {}, "NZD", "default_currency"],
+  ] as const)("labels %s ranking with its actual currency source", async (sort_by, scope, currency, currency_field) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: string) => new URL(input).pathname.includes("/Company/") ? Response.json({ data: { default_currency: "NZD" } }) : Response.json({ data: [] })));
+    const result = await invokeTool("list_sales_invoices", { company: "Example Company", sort_by, ...scope });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toHaveProperty("ranking", { field: sort_by, currency, currency_field, company: "Example Company" });
+    expect(JSON.parse(result.content[1].text).ranking).toEqual(result.structuredContent?.ranking);
+  });
+
+  it("advertises valid summary options and object output contracts for all 30 tools", async () => {
+    const request = new Request(serviceToolRequest("gateway-token", "ignored", {}), { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
+    const response = await handleServiceMcpRequest(request, serviceEnv(await apiTokenSite()), executionContext());
+    const body = await response.text();
+    const data = body.split("\n").find((line) => line.startsWith("data: "));
+    const tools = JSON.parse(data?.slice(6) ?? body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> }; outputSchema: { type?: string }; annotations: { readOnlyHint: boolean; destructiveHint: boolean } }>;
+    expect(tools).toHaveLength(30);
+    const transactions = new Set(["list_sales_invoices", "list_purchase_invoices", "list_sales_orders", "list_purchase_orders", "list_payments", "list_bank_transactions"]);
+    for (const tool of tools) {
+      expect(tool.outputSchema.type, tool.name).toBe("object");
+      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+      if (tool.name.startsWith("list_")) expect(tool.inputSchema.properties.summary.enum, tool.name).toEqual(transactions.has(tool.name) ? ["count", "totals"] : ["count"]);
+    }
+  });
+
+  it.each(["list_companies", "list_customers", "list_items", "list_suppliers", "list_fiscal_years"])("rejects unsupported totals in %s at input validation", async (tool) => {
+    const fetchMock = vi.fn(); vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool(tool, { summary: "totals" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/^Input validation (failed|error)/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["get_current_user", "get_general_ledger", "get_accounts_receivable_summary"])("preserves legacy JSON and supplies structured output for %s", async (tool) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ message: { columns: [], result: [] } })));
+    const result = await invokeTool(tool, { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-30", report_date: "2026-09-30" });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toBeDefined();
+    expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+    expect(result.structuredContent).not.toHaveProperty("result");
+  });
+
+
+  it.each(["validation", "permission"])("keeps opt-in %s failures valid against the advertised output schema", async (failure) => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("private upstream body", { status: 403 })));
+    const env = serviceEnv(await apiTokenSite());
+    const discovery = new Request(serviceToolRequest("gateway-token", "ignored", {}), { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+    const listResponse = await handleServiceMcpRequest(discovery, env, executionContext());
+    const listText = await listResponse.text();
+    const listData = listText.split("\n").find((line) => line.startsWith("data: "));
+    const tools = JSON.parse(listData?.slice(6) ?? listText).result.tools as Array<{ name: string; outputSchema: z.core.JSONSchema.JSONSchema }>;
+    const request = serviceToolRequest("gateway-token", "list_suppliers", failure === "validation" ? { summary: "totals" } : {});
+    request.headers.set("X-MCP-Error-Format", "result");
+    const response = await handleServiceMcpRequest(request, env, executionContext());
+    const payload = await response.json() as { result: { isError: boolean; structuredContent: unknown } };
+    expect(payload.result.isError).toBe(false);
+    expect(payload.result.structuredContent).toMatchObject({ status: "error", ok: false, error: { code: failure === "validation" ? "INVALID_ARGUMENT" : "PERMISSION_DENIED" } });
+    for (const tool of tools) {
+      const schema = z.fromJSONSchema(tool.outputSchema);
+      expect(schema.safeParse(payload.result.structuredContent).success, tool.name).toBe(true);
+      expect(schema.safeParse({}).success, tool.name).toBe(false);
+    }
+    expect(JSON.stringify(payload)).not.toContain("private upstream body");
   });
 
 });

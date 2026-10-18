@@ -154,7 +154,7 @@ Directory tools search record IDs and display names. If the full phrase has no e
 
 Invoice and order tools accept `customer_query` or `supplier_query` for spoken names. Exact `customer` and `supplier` filters must use confirmed record IDs. Do not combine a spoken query and its exact filter. `search` is document text, not an unrestricted filter language. SQL wildcard characters in text are escaped.
 
-Use `unpaid_only: true` for submitted positive invoice balances, including partly paid and overdue invoices. Use `overdue_as_of` for due dates strictly before a date. Neither can be combined with `status`. Purchase orders support `pending_receipt: true` for submitted, open orders with less than 100 percent received. List tools expose bounded, allowlisted sorting; monetary invoice/order ranking uses `base_grand_total` with one company, or a native amount with an explicit `currency` filter.
+Use `unpaid_only: true` for submitted positive invoice balances, including partly paid and overdue invoices. Use `overdue_as_of` for due dates strictly before a date. Neither can be combined with `status`. Purchase orders support `pending_receipt: true` for submitted, open orders with less than 100 percent received. List tools expose bounded, allowlisted sorting. Rank invoice/order `base_grand_total` with one company, `grand_total` with an exact document `currency`, and invoice `outstanding_amount` with an exact `party_account_currency`.
 
 | Tool | Purpose |
 | --- | --- |
@@ -170,6 +170,10 @@ Directory name searches keep their bounded ranked candidates by default. Their o
 Use `summary: "count"` on a list tool to count all permission-visible matching documents, independent of offset and limit. Use literal mode when combining a directory search with a summary. Transaction lists also support `summary: "totals"`: invoice and order `grand_total` requires one company and document currency; payment `base_paid_amount` and `base_received_amount` require one company and use company currency; bank deposit, withdrawal, and unallocated totals require company and bank currency. Aggregates use fixed server-owned expressions through the same permission-aware Frappe list API. Filters, including document state, are retained. These are current document amounts, not recognised revenue, historical balances, or net cash. Use the receivables/payables tools for balances; invoice outstanding amounts can use a different party account currency.
 
 For example, `list_sales_invoices` with `{ "company": "Example Company", "currency": "NZD", "docstatus": 1, "summary": "totals" }` returns the complete matching document count and grand total without returning invoice pages.
+
+Invoice lists and `get_document` include `party_account_currency` beside `outstanding_amount`. Sorting invoices by `outstanding_amount` requires an exact `party_account_currency` filter; a document `currency` filter alone does not make balances comparable. Sorting `grand_total` still requires document `currency`, and sorting `base_grand_total` requires one company. Ranking metadata names the amount field, currency, and source currency field in both structured and text output. Invoice total summaries remain in document currency.
+
+All 30 tools advertise object output schemas and read-only annotations. Successful results include `structuredContent` with their existing text content preserved. List contracts cover pages, count/total summaries, and party-confirmation results. Master-data tools advertise `summary: "count"` only; the six transaction lists also advertise `"totals"`. These annotations describe behavior; Frappe still enforces permissions.
 
 Standard row-based report tools accept `offset` and return `next_offset`, `row_count`, and visible completeness warnings. Each call reruns the report; output pagination does not reduce upstream report size or execution time. Compact summaries retain their existing complete totals and top-result limits.
 

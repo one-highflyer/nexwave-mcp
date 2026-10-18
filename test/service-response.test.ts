@@ -31,6 +31,7 @@ it.each(["INVALID_ARGUMENT", "UPSTREAM_TIMEOUT", "PERMISSION_DENIED", "NOT_FOUND
 
 it.each([
   ["Input validation failed for tool: private supplied value", "INVALID_ARGUMENT"],
+  ["Input validation error: private supplied value", "INVALID_ARGUMENT"],
   ["private unexpected exception", "INTERNAL_ERROR"],
   ['{"error":{"code":"UNKNOWN","message":"private"}}', "INTERNAL_ERROR"],
 ])("sanitises unstructured errors in opt-in mode", async (text, code) => {

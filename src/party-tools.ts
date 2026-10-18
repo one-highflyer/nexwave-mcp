@@ -1,3 +1,4 @@
+import { registerReadTool } from "./tool-contract";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { frappeGet, frappeList, frappeRunReport, type FrappeReportResult } from "./frappe";
@@ -12,7 +13,7 @@ type PropsProvider = () => Promise<NexWaveAuthProps>;
 type PartyType = "Customer" | "Supplier";
 
 export function registerPartyTools(server: McpServer, getProps: PropsProvider): void {
-  server.registerTool("get_party_balance", {
+  registerReadTool(server, "get_party_balance", {
     description: "Resolve one customer or supplier by spoken name and return its balance in company currency. Use this for a named party balance instead of list/report chains. If party type is unclear ask the user first. A candidates or no_match result contains no balance. Confirm a candidate then call with its exact ID in party_id.",
     inputSchema: {
       company: NAME,
@@ -50,7 +51,7 @@ export function registerPartyTools(server: McpServer, getProps: PropsProvider): 
     });
   });
 
-  server.registerTool("get_accounts_payable_summary", {
+  registerReadTool(server, "get_accounts_payable_summary", {
     description: "Return complete supplier payable totals, overdue amounts, credits, and top supplier balances in company currency. Prefer this over detailed payable rows for spoken overviews. Totals cover all report rows, not just the top suppliers.",
     inputSchema: {
       company: NAME,

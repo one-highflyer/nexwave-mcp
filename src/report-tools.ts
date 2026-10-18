@@ -1,8 +1,9 @@
+import { registerReadTool } from "./tool-contract";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { frappeFiscalYear, frappeRunReport, type FrappeReportResult } from "./frappe";
 import { PERIOD_SCHEMA, resolveReportPeriod } from "./report-period";
-import { ToolError } from "./tool-result";
+import { structuredResult, ToolError } from "./tool-result";
 import type { NexWaveAuthProps } from "./types";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use a date in YYYY-MM-DD format.");
@@ -32,7 +33,7 @@ const STRUCTURAL_FIELDS = new Set([
 type PropsProvider = () => Promise<NexWaveAuthProps>;
 
 export function registerReportTools(server: McpServer, getProps: PropsProvider): void {
-  server.registerTool(
+  registerReadTool(server,
     "get_stock_balance",
     {
       description: "Run the standard NexWave Stock Balance report for a company and date range.",
@@ -70,7 +71,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_stock_ledger",
     {
       description: "Run the standard NexWave Stock Ledger report. Detailed report ranges are limited to 366 days.",
@@ -112,7 +113,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_profit_and_loss",
     {
       description: "Run the standard NexWave Profit and Loss Statement for a date range.",
@@ -153,7 +154,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_trial_balance",
     {
       description: "Run the standard NexWave Trial Balance for one fiscal year and date range.",
@@ -203,7 +204,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_general_ledger",
     {
       description: "Run the standard NexWave General Ledger report. Detailed report ranges are limited to 366 days.",
@@ -256,7 +257,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_accounts_receivable_summary",
     {
       description: "Return a compact NexWave Accounts Receivable ageing summary with totals and the largest customer balances. Use totals.overdue only when overdue_complete is true; never infer overdue from ageing buckets. Overdue excludes due-today amounts and keeps unallocated credits separate.",
@@ -291,11 +292,11 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
         show_remarks: 0,
       });
       const data = await frappeRunReport(await getProps(), "Accounts Receivable", filters);
-      return textResult(normaliseAgeingSummary("Accounts Receivable", filters, data, ageing_ranges, limit));
+      return structuredResult(normaliseAgeingSummary("Accounts Receivable", filters, data, ageing_ranges, limit));
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_accounts_receivable",
     {
       description: "Run the standard NexWave Accounts Receivable ageing report as at a report date.",
@@ -339,7 +340,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_accounts_payable",
     {
       description: "Run the standard NexWave Accounts Payable ageing report as at a report date.",
@@ -383,7 +384,7 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
   );
 
-  server.registerTool(
+  registerReadTool(server,
     "get_bank_reconciliation_statement",
     {
       description: "Run the standard NexWave Bank Reconciliation Statement for a bank or cash ledger as at a report date.",
@@ -422,7 +423,7 @@ async function runReport(
 ) {
   const cleanFilters = compactFilters(filters);
   const data = await frappeRunReport(await getProps(), reportName, cleanFilters);
-  return textResult(normaliseReportResult(reportName, cleanFilters, data, limit, offset));
+  return structuredResult(normaliseReportResult(reportName, cleanFilters, data, limit, offset));
 }
 
 export function normaliseReportResult(
@@ -709,8 +710,4 @@ function cleanText(value: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function textResult(value: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
 }

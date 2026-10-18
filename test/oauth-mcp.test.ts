@@ -97,6 +97,17 @@ it("exposes pagination and complete counts to OAuth clients", async () => {
   expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer old-token");
 });
 
+it("uses party account currency for OAuth invoice rankings without changing the result shape", async () => {
+  const fetchMock = vi.fn(async (_input: string) => Response.json({ data: [{ name: "INV-1", currency: "USD", party_account_currency: "NZD", outstanding_amount: 150 }] }));
+  vi.stubGlobal("fetch", fetchMock);
+  const result = await callTool(props, "list_sales_invoices", { sort_by: "outstanding_amount", party_account_currency: "NZD" });
+  expect(result.isError).not.toBe(true);
+  const url = new URL(fetchMock.mock.calls[0][0]);
+  expect(JSON.parse(url.searchParams.get("filters")!)).toContainEqual(["Sales Invoice", "party_account_currency", "=", "NZD"]);
+  expect(JSON.parse(result.content[0].text)).toEqual([{ name: "INV-1", currency: "USD", party_account_currency: "NZD", outstanding_amount: 150 }]);
+  expect(JSON.parse(result.content[1].text)).toMatchObject({ ranking: { currency: "NZD", currency_field: "party_account_currency" } });
+});
+
 async function callTool(authProps: NexWaveOAuthAuthProps, name: string, args: Record<string, unknown>, compatibilityHeader = false) {
   // Simulate the trusted context supplied by the OAuth provider after verification.
   const context = {
