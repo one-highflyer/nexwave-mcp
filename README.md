@@ -19,6 +19,8 @@ The setup page requires the private `ADMIN_TOKEN` Worker secret. Registered site
 
 Authenticated MCP requests on `/mcp` and `/service/mcp` emit a structured `mcp_request` event to Cloudflare Workers Logs. Each event contains `site_id`, `site_name`, `auth_type` (`oauth` or `api_token`), a UTC start `timestamp`, a generated `request_id`, the MCP `method`, the registered `tool` name (or `null` for other methods), `outcome`, `error_code`, and `duration_ms`.
 
+The `message` column shows a short summary, such as `MCP list_sales_invoices: success` or `MCP list_suppliers: error (PERMISSION_DENIED)`. It uses only the recorded method/tool, outcome, and safe error code; the other fields remain available for filtering and grouping.
+
 Events are recorded when the MCP server produces a terminal reply. Tool errors are recorded as `error` even when the HTTP status is 200 or a service client uses `X-MCP-Error-Format: result`. Connections closed before a reply are recorded as `cancelled`. These events describe server execution, not confirmation that the client received the reply. Notifications and requests rejected before MCP dispatch, including authentication failures and malformed transport requests, do not produce usage events. Standard Worker invocation logs still cover HTTP requests.
 
 Site identity comes from the authenticated connection. Usage logs exclude user email addresses, credentials, headers, request arguments, response data, and error text. Unregistered tool and method names are recorded as `unknown`. Site names are private operational data: keep log access limited to the operators who need it. No tool-usage history is written to D1.
