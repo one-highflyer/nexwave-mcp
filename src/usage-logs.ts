@@ -28,6 +28,7 @@ export function withMcpUsageLogging(server: McpServer): McpServer {
       try {
         console.log({
           event: "mcp_request",
+          message: `MCP ${call.tool ?? call.method}: ${outcome}${errorCode ? ` (${errorCode})` : ""}`,
           ...identity,
           timestamp: new Date(call.started).toISOString(),
           request_id: call.request_id,

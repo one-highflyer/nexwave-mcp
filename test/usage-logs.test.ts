@@ -27,6 +27,7 @@ it.each<Mode>(["oauth", "api_token"])("logs the verified site and successful too
   expect(usage()).toHaveLength(1);
   expect(usage()[0]).toEqual({
     event: "mcp_request", site_id: "site_test", site_name: "Example", auth_type: mode,
+    message: "MCP get_current_user: success",
     timestamp: expect.any(String), request_id: expect.any(String), method: "tools/call",
     tool: "get_current_user", outcome: "success", error_code: null, duration_ms: expect.any(Number),
   });
@@ -40,8 +41,8 @@ it.each<Mode>(["oauth", "api_token"])("logs discovery requests separately from t
   await request(mode, "initialize", { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "test", version: "1" } });
   await request(mode, "tools/list", {});
   expect(usage()).toMatchObject([
-    { method: "initialize", tool: null, outcome: "success", auth_type: mode },
-    { method: "tools/list", tool: null, outcome: "success", auth_type: mode },
+    { method: "initialize", tool: null, outcome: "success", auth_type: mode, message: "MCP initialize: success" },
+    { method: "tools/list", tool: null, outcome: "success", auth_type: mode, message: "MCP tools/list: success" },
   ]);
 });
 
@@ -50,7 +51,7 @@ it.each<Mode>(["oauth", "api_token"])("logs HTTP 200 tool failures for %s withou
   const { status, payload } = await request(mode, "tools/call", { name: "list_suppliers", arguments: { search: "private-search" } });
   expect(status).toBe(200);
   expect(payload.result.isError).toBe(true);
-  expect(usage()).toMatchObject([{ auth_type: mode, tool: "list_suppliers", outcome: "error", error_code: "PERMISSION_DENIED" }]);
+  expect(usage()).toMatchObject([{ auth_type: mode, tool: "list_suppliers", outcome: "error", error_code: "PERMISSION_DENIED", message: "MCP list_suppliers: error (PERMISSION_DENIED)" }]);
   expect(JSON.stringify(usage())).not.toMatch(/private-|example\.com/);
 });
 
@@ -131,7 +132,7 @@ it("records a connection closed during a tool call once, without a later success
   release();
   await pending;
   await new Promise((resolve) => setTimeout(resolve, 0));
-  expect(usage()).toMatchObject([{ tool: "list_suppliers", outcome: "cancelled", error_code: "CONNECTION_CLOSED" }]);
+  expect(usage()).toMatchObject([{ tool: "list_suppliers", outcome: "cancelled", error_code: "CONNECTION_CLOSED", message: "MCP list_suppliers: cancelled (CONNECTION_CLOSED)" }]);
   expect(usage()).toHaveLength(1);
 });
 
