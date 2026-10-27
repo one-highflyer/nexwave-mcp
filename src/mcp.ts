@@ -4,6 +4,7 @@ import { createMcpHandler, getMcpAuthContext } from "agents/mcp/server";
 import { z } from "zod";
 import { frappeGet, ensureFreshToken } from "./frappe";
 import { withMcpErrorBoundary } from "./mcp-boundary";
+import { withMcpUsageLogging } from "./usage-logs";
 import { listResult, searchRecords } from "./search";
 import { documentDetails } from "./document-details";
 import { structuredResult, ToolError } from "./tool-result";
@@ -396,7 +397,7 @@ export function createNexWaveServer(): McpServer {
   registerPartyTools(server, currentProps);
   registerInsightTools(server, currentProps);
 
-  return server;
+  return withMcpUsageLogging(server);
 }
 
 const baseMcpHandler = createMcpHandler(createNexWaveServer, {
