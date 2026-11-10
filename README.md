@@ -8,10 +8,12 @@ It uses standard MCP with OAuth 2 for interactive users and Frappe API tokens fo
 
 | Service | URL |
 | --- | --- |
-| MCP endpoint | `https://mcp.highflyertech.co.nz/mcp` |
-| Service MCP endpoint | `https://mcp.highflyertech.co.nz/service/mcp` |
-| Site setup | `https://mcp.highflyertech.co.nz/admin` |
-| Health check | `https://mcp.highflyertech.co.nz/health` |
+| MCP endpoint | `https://mcp.nexwaveapp.com/mcp` |
+| Service MCP endpoint | `https://mcp.nexwaveapp.com/service/mcp` |
+| Site setup | `https://mcp.nexwaveapp.com/admin` |
+| Health check | `https://mcp.nexwaveapp.com/health` |
+
+Use `mcp.nexwaveapp.com` for new connections. Existing clients can continue to use `mcp.highflyertech.co.nz`.
 
 The setup page requires the private `ADMIN_TOKEN` Worker secret. Registered site names and URLs remain private.
 
@@ -84,13 +86,13 @@ Each MCP data tool has a shared 50-second upstream request budget, including any
 Use this remote MCP endpoint in a client that supports OAuth-enabled remote MCP servers:
 
 ```text
-https://mcp.highflyertech.co.nz/mcp
+https://mcp.nexwaveapp.com/mcp
 ```
 
 For Codex CLI and the Codex desktop app:
 
 ```sh
-codex mcp add nexwave --url https://mcp.highflyertech.co.nz/mcp
+codex mcp add nexwave --url https://mcp.nexwaveapp.com/mcp
 codex mcp login nexwave
 codex mcp get nexwave
 ```
@@ -102,7 +104,7 @@ The browser will ask for the NexWave site URL and then show that site's normal F
 Use the service endpoint when a client cannot complete an interactive OAuth flow:
 
 ```text
-https://mcp.highflyertech.co.nz/service/mcp
+https://mcp.nexwaveapp.com/service/mcp
 ```
 
 Configure this request header:
@@ -258,11 +260,14 @@ npm run db:remote
 npm run deploy
 ```
 
-For a Worker at `https://nexwave-mcp.example.workers.dev`, add this redirect URI to the Frappe OAuth Client:
+Add `/oauth/frappe/callback` on each gateway origin used for OAuth to **Redirect URIs** in the site's Frappe OAuth Client. For production, use the NexWave callback and keep the HighFlyer callback where existing clients still use that domain.
 
 ```text
-https://nexwave-mcp.example.workers.dev/oauth/frappe/callback
+https://mcp.nexwaveapp.com/oauth/frappe/callback
+https://mcp.highflyertech.co.nz/oauth/frappe/callback
 ```
+
+The gateway supplies the callback URL for the domain the user connects to. The existing **Default Redirect URI** can stay in place while both URLs are allowed.
 
 Register the site at `/admin`, then give users the `/mcp` endpoint.
 
