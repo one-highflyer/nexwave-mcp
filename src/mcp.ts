@@ -32,6 +32,8 @@ const LIST_OPTIONS = {
 const TRANSACTION_SUMMARY = z.enum(["count", "totals"]).optional().describe("Return all-match counts or monetary totals instead of a page. Totals require company and document currency; payment totals require company and use company currency. Not a historical balance.");
 const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact document currency. Required for grand_total ranking and invoice/order totals. Outstanding amounts use party_account_currency instead.");
 
+const MANUFACTURING_LINK = z.string().trim().min(1).max(140).optional();
+
 const READABLE_DOCTYPES = {
   Customer: ["name", "customer_name", "customer_group", "territory", "disabled"],
   Item: ["name", "item_name", "item_group", "stock_uom", "disabled"],
@@ -41,6 +43,9 @@ const READABLE_DOCTYPES = {
   "Purchase Invoice": ["name", "company", "supplier", "supplier_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount", "party_account_currency"],
   "Payment Entry": ["name", "posting_date", "company", "payment_type", "party_type", "party", "party_name", "mode_of_payment", "paid_from", "paid_to", "paid_from_account_currency", "paid_to_account_currency", "paid_amount", "received_amount", "unallocated_amount", "reference_no", "reference_date", "status"],
   "Bank Transaction": ["name", "date", "company", "bank_account", "description", "reference_number", "transaction_id", "transaction_type", "currency", "deposit", "withdrawal", "allocated_amount", "unallocated_amount", "status", "party_type", "party"],
+  "Work Order": ["name", "company", "production_item", "item_name", "bom_no", "sales_order", "status", "docstatus", "qty", "produced_qty", "stock_uom", "planned_start_date", "planned_end_date", "actual_start_date", "actual_end_date"],
+  BOM: ["name", "company", "item", "item_name", "quantity", "uom", "is_active", "is_default", "docstatus", "with_operations"],
+  "Job Card": ["name", "company", "work_order", "bom_no", "production_item", "operation", "workstation", "status", "docstatus", "posting_date", "for_quantity", "total_completed_qty"],
 } as const;
 
 type ReadableDoctype = keyof typeof READABLE_DOCTYPES;
@@ -366,6 +371,75 @@ export function createNexWaveServer(): McpServer {
     sortFields: ["transaction_date", "delivery_date", "base_grand_total", "grand_total", "name"],
   });
 
+  registerLookupTool(server, "list_work_orders", "Work Order", {
+    description: "List work orders, planned production dates, and quantities to make and already produced.",
+    fields: [...READABLE_DOCTYPES["Work Order"]],
+    searchFields: ["name", "production_item", "item_name"],
+    extraSchema: {
+      company: MANUFACTURING_LINK,
+      production_item: MANUFACTURING_LINK,
+      sales_order: MANUFACTURING_LINK,
+      status: statusSchema(["Draft", "Submitted", "Not Started", "In Process", "Completed", "Stopped", "Closed", "Cancelled"]),
+      docstatus: DOCSTATUS,
+      planned_start_from_date: DATE.optional().describe("Inclusive lower date for the planned start (YYYY-MM-DD)."),
+      planned_start_to_date: DATE.optional().describe("Inclusive upper date for the planned start (YYYY-MM-DD)."),
+    },
+    filters: ({ company, production_item, sales_order, status, docstatus, planned_start_from_date, planned_start_to_date }) => [
+      ...(company ? [["Work Order", "company", "=", company]] : []),
+      ...(production_item ? [["Work Order", "production_item", "=", production_item]] : []),
+      ...(sales_order ? [["Work Order", "sales_order", "=", sales_order]] : []),
+      ...(status ? [["Work Order", "status", "=", status]] : []),
+      ...(docstatus !== undefined ? [["Work Order", "docstatus", "=", docstatus]] : []),
+      ...dateFilters("Work Order", "planned_start_date", planned_start_from_date, planned_start_to_date, { datetime: true }),
+    ],
+    orderBy: "planned_start_date desc",
+    sortFields: ["planned_start_date", "planned_end_date", "name"],
+  });
+
+  registerLookupTool(server, "list_boms", "BOM", {
+    description: "List bills of materials for finished items. Use is_active, is_default, and docstatus to find current submitted BOMs. Use get_document for components and operations.",
+    fields: [...READABLE_DOCTYPES.BOM],
+    searchFields: ["name", "item", "item_name"],
+    extraSchema: {
+      company: MANUFACTURING_LINK,
+      item: MANUFACTURING_LINK,
+      is_active: z.boolean().optional(),
+      is_default: z.boolean().optional(),
+      docstatus: DOCSTATUS.describe("Document state: 0 draft, 1 submitted, 2 cancelled."),
+    },
+    filters: ({ company, item, is_active, is_default, docstatus }) => [
+      ...(company ? [["BOM", "company", "=", company]] : []),
+      ...(item ? [["BOM", "item", "=", item]] : []),
+      ...(is_active !== undefined ? [["BOM", "is_active", "=", Number(is_active)]] : []),
+      ...(is_default !== undefined ? [["BOM", "is_default", "=", Number(is_default)]] : []),
+      ...(docstatus !== undefined ? [["BOM", "docstatus", "=", docstatus]] : []),
+    ],
+    orderBy: "name asc",
+  });
+
+  registerLookupTool(server, "list_job_cards", "Job Card", {
+    description: "List production job cards with their work order, operation, workstation, status, and assigned and completed quantities.",
+    fields: [...READABLE_DOCTYPES["Job Card"]],
+    searchFields: ["name", "work_order", "operation", "workstation"],
+    extraSchema: {
+      company: MANUFACTURING_LINK,
+      work_order: MANUFACTURING_LINK,
+      operation: MANUFACTURING_LINK,
+      workstation: MANUFACTURING_LINK,
+      status: statusSchema(["Open", "Work In Progress", "Material Transferred", "On Hold", "Submitted", "Cancelled", "Completed"]),
+      docstatus: DOCSTATUS,
+    },
+    filters: ({ company, work_order, operation, workstation, status, docstatus }) => [
+      ...(company ? [["Job Card", "company", "=", company]] : []),
+      ...(work_order ? [["Job Card", "work_order", "=", work_order]] : []),
+      ...(operation ? [["Job Card", "operation", "=", operation]] : []),
+      ...(workstation ? [["Job Card", "workstation", "=", workstation]] : []),
+      ...(status ? [["Job Card", "status", "=", status]] : []),
+      ...(docstatus !== undefined ? [["Job Card", "docstatus", "=", docstatus]] : []),
+    ],
+    orderBy: "posting_date desc",
+  });
+
   registerReadTool(server,
     "get_document",
     {
@@ -380,10 +454,13 @@ export function createNexWaveServer(): McpServer {
           "Purchase Invoice",
           "Payment Entry",
           "Bank Transaction",
+          "Work Order",
+          "BOM",
+          "Job Card",
         ]),
         name: z.string().trim().min(1).max(140),
         detail_offset: LIST_OPTIONS.offset,
-        detail_limit: z.number().int().min(1).max(50).default(20).describe("Maximum item or payment-reference rows returned. Use detail_meta next_offset to continue."),
+        detail_limit: z.number().int().min(1).max(50).default(20).describe("Maximum rows per detail table. Use that table's detail_meta next_offset to continue."),
       },
     },
     async ({ doctype, name, detail_offset, detail_limit }) => {

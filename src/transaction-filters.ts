@@ -24,7 +24,7 @@ export const ORDER_DATES = {
   overdue_as_of: DATE.optional().describe("Pending orders with header schedule date strictly before this date. Not an item-level overdue check. Use status All or omit; do not set pending_receipt/pending_delivery to false."),
 };
 
-export function dateFilters(doctype: string, field: string, fromDate: unknown, toDate: unknown): unknown[] {
+export function dateFilters(doctype: string, field: string, fromDate: unknown, toDate: unknown, options: { datetime?: boolean } = {}): unknown[] {
   const from = typeof fromDate === "string" ? fromDate : undefined;
   const to = typeof toDate === "string" ? toDate : undefined;
   const start = from ?? to;
@@ -32,7 +32,7 @@ export function dateFilters(doctype: string, field: string, fromDate: unknown, t
   if (start && end) validateDateRange(start, end);
   return [
     ...(from ? [[doctype, field, ">=", from]] : []),
-    ...(to ? [[doctype, field, "<=", to]] : []),
+    ...(to ? [[doctype, field, "<=", options.datetime ? `${to} 23:59:59.999999` : to]] : []),
   ];
 }
 

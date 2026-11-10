@@ -146,7 +146,17 @@ All tools are read-only. List results and report output are bounded to keep MCP 
 | `list_bank_transactions` | Search and filter imported bank transactions |
 | `get_document` | Get an allowlisted business document by exact name |
 
-`get_document` supports Customer, Item, Sales Order, Sales Invoice, Purchase Order, Purchase Invoice, Payment Entry, and Bank Transaction.
+`get_document` supports Customer, Item, Sales Order, Sales Invoice, Purchase Order, Purchase Invoice, Payment Entry, Bank Transaction, Work Order, BOM, and Job Card.
+
+### Manufacturing
+
+| Tool | Purpose |
+| --- | --- |
+| `list_work_orders` | Find work orders by company, production item, Sales Order, status, or planned start date. Returns the linked BOM and planned and produced quantities. |
+| `list_boms` | Find bills of materials by company, item, and active or default status. Use `docstatus: 1` for submitted BOMs. |
+| `list_job_cards` | Find job cards by company, Work Order, operation, workstation, or status. Returns assigned and completed quantities. |
+
+Use `get_document` for BOM components and operations, Work Order required items and operations, or Job Card items and sub-operations. Each detail table has its own pagination metadata.
 
 ### Reports
 
@@ -189,7 +199,7 @@ For example, `list_sales_invoices` with `{ "company": "Example Company", "curren
 
 Invoice lists and `get_document` include `party_account_currency` beside `outstanding_amount`. Sorting invoices by `outstanding_amount` requires an exact `party_account_currency` filter; a document `currency` filter alone does not make balances comparable. Sorting `grand_total` still requires document `currency`, and sorting `base_grand_total` requires one company. Ranking metadata names the amount field, currency, and source currency field in both structured and text output. Invoice total summaries remain in document currency.
 
-All 30 tools advertise object output schemas and read-only annotations. Successful results include `structuredContent` with their existing text content preserved. List contracts cover pages, count/total summaries, and party-confirmation results. Master-data tools advertise `summary: "count"` only; the six transaction lists also advertise `"totals"`. These annotations describe behavior; Frappe still enforces permissions.
+All 33 tools advertise object output schemas and read-only annotations. Successful results include `structuredContent` with their existing text content preserved. List contracts cover pages, count/total summaries, and party-confirmation results. All list tools advertise `summary: "count"`. The six sales, purchasing, payment, and bank transaction lists also advertise `"totals"`. Frappe enforces permissions.
 
 Standard row-based report tools accept `offset` and return `next_offset`, `row_count`, and visible completeness warnings. Each call reruns the report; output pagination does not reduce upstream report size or execution time. Compact summaries retain their existing complete totals and top-result limits.
 

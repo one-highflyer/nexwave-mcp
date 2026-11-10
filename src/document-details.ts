@@ -7,6 +7,18 @@ const TABLES: Record<string, Record<string, string[]>> = {
   "Sales Invoice": { items: ITEM_FIELDS }, "Purchase Invoice": { items: ITEM_FIELDS },
   "Payment Entry": { references: REFERENCE_FIELDS },
   "Bank Transaction": { payment_entries: ["name", "idx", "payment_document", "payment_entry", "allocated_amount"] },
+  "Work Order": {
+    required_items: ["name", "idx", "item_code", "item_name", "operation", "source_warehouse", "stock_uom", "required_qty", "transferred_qty", "consumed_qty"],
+    operations: ["name", "idx", "operation", "workstation", "sequence_id", "status", "completed_qty", "planned_start_time", "planned_end_time", "actual_start_time", "actual_end_time"],
+  },
+  BOM: {
+    items: ["name", "idx", "item_code", "item_name", "bom_no", "operation", "qty", "uom", "stock_qty", "stock_uom"],
+    operations: ["name", "idx", "operation", "workstation", "sequence_id", "time_in_mins", "batch_size"],
+  },
+  "Job Card": {
+    items: ["name", "idx", "item_code", "item_name", "source_warehouse", "required_qty", "transferred_qty", "uom", "stock_uom"],
+    sub_operations: ["name", "idx", "sub_operation", "status", "completed_qty"],
+  },
 };
 
 export function documentDetails(doctype: string, document: Record<string, unknown>, offset: number, limit: number): Record<string, unknown> & { detail_meta: Record<string, unknown> } {
