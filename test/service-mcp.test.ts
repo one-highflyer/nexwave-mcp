@@ -404,6 +404,55 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[1].text)).toMatchObject({ meta: { offset: 2, next_offset: 3, complete: false, warning: expect.any(String) } });
   });
 
+  it.each([
+    {
+      tool: "list_work_orders", doctype: "Work Order", order: "planned_start_date desc, name asc",
+      args: { production_item: "FINISHED-1", sales_order: "SO-1", status: "In Process", docstatus: 1, planned_start_from_date: "2026-09-01", planned_start_to_date: "2026-09-30" },
+      filters: [
+        ["production_item", "=", "FINISHED-1"], ["sales_order", "=", "SO-1"], ["status", "=", "In Process"], ["docstatus", "=", 1],
+        ["planned_start_date", ">=", "2026-09-01"], ["planned_start_date", "<=", "2026-09-30 23:59:59.999999"],
+      ],
+    },
+    {
+      tool: "list_boms", doctype: "BOM", order: "name asc",
+      args: { item: "FINISHED-1", is_active: true, is_default: false, docstatus: 1 },
+      filters: [["item", "=", "FINISHED-1"], ["is_active", "=", 1], ["is_default", "=", 0], ["docstatus", "=", 1]],
+    },
+    {
+      tool: "list_job_cards", doctype: "Job Card", order: "posting_date desc, name asc",
+      args: { work_order: "WO-1", operation: "Assembly", workstation: "Station 1", status: "Work In Progress", docstatus: 0 },
+      filters: [["work_order", "=", "WO-1"], ["operation", "=", "Assembly"], ["workstation", "=", "Station 1"], ["status", "=", "Work In Progress"], ["docstatus", "=", 0]],
+    },
+  ])("pages $tool past 50 records with its original filters", async ({ tool, doctype, order, args, filters }) => {
+    const records = Array.from({ length: 51 }, (_, index) => ({ name: `DOC-${index + 1}` }));
+    const fetchMock = vi.fn(async (input: string) => {
+      const { searchParams } = new URL(input);
+      const offset = Number(searchParams.get("limit_start"));
+      return Response.json({ data: records.slice(offset, offset + Number(searchParams.get("limit_page_length"))) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const scope = { ...args, company: "Example Company", search: "DOC", limit: 50 };
+    const first = await invokeTool(tool, scope);
+    expect(first.isError).not.toBe(true);
+    const { meta } = JSON.parse(first.content[1].text);
+    expect(meta).toMatchObject({ count: 50, offset: 0, next_offset: 50 });
+    const next = await invokeTool(tool, { ...scope, offset: meta.next_offset });
+    expect(next.isError).not.toBe(true);
+    expect(next.structuredContent).toMatchObject({ records: [records[50]], meta: { count: 1, offset: 50, next_offset: null } });
+
+    const upstreamUrls = fetchMock.mock.calls.map(([input]) => new URL(input));
+    expect(upstreamUrls.map((url) => url.searchParams.get("limit_start"))).toEqual(["0", "50"]);
+    for (const url of upstreamUrls) {
+      expect(url.pathname).toBe(`/api/resource/${encodeURIComponent(doctype)}`);
+      expect(url.searchParams.get("order_by")).toBe(order);
+      expect(JSON.parse(url.searchParams.get("filters")!)).toEqual([
+        [doctype, "company", "=", "Example Company"], ...filters.map((filter) => [doctype, ...filter]),
+      ]);
+      expect(JSON.parse(url.searchParams.get("or_filters")!)).toContainEqual([doctype, "name", "like", "%DOC%"]);
+    }
+  });
+
   it("uses the same scope for count and total modes through the service route", async () => {
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [{ record_count: 80, total_grand_total: 9000 }] }));
     vi.stubGlobal("fetch", fetchMock);
@@ -442,6 +491,43 @@ describe("service MCP authentication", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    {
+      doctype: "Work Order", header: { produced_qty: 10 },
+      table: "required_items", row: { item_code: "PART-2", required_qty: 2 },
+      otherTable: "operations", otherRow: { operation: "Assembly", completed_qty: 10 },
+    },
+    {
+      doctype: "BOM", header: { quantity: 2, is_default: 1 },
+      table: "items", row: { item_code: "PART-2", qty: 2, uom: "Nos", bom_no: "BOM-PART-2" },
+      otherTable: "operations", otherRow: { operation: "Assembly", time_in_mins: 15 },
+    },
+    {
+      doctype: "Job Card", header: { work_order: "WO-1", total_completed_qty: 10 },
+      table: "items", row: { item_code: "PART-2", required_qty: 2 },
+      otherTable: "sub_operations", otherRow: { sub_operation: "Assembly", status: "Pending" },
+    },
+  ])("pages selected $doctype details through get_document", async ({ doctype, header, table, row, otherTable, otherRow }) => {
+    const data = {
+      name: "DOC-1", ...header, employee: [{ employee: "PRIVATE" }], time_logs: [{ employee: "PRIVATE" }],
+      [table]: [{ name: "ROW-1" }, { ...row, custom_note: "PRIVATE" }, { name: "ROW-3" }],
+      [otherTable]: [otherRow],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ data }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invokeTool("get_document", { doctype, name: "DOC-1", detail_offset: 1, detail_limit: 1 });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual({
+      name: "DOC-1", ...header, [table]: [row], [otherTable]: [],
+      detail_meta: {
+        [table]: expect.objectContaining({ count: 3, offset: 1, next_offset: 2, complete: false }),
+        [otherTable]: expect.objectContaining({ count: 1, next_offset: null }),
+      },
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(new URL(String(fetchMock.mock.calls[0][0])).pathname).toBe(`/api/resource/${encodeURIComponent(doctype)}/DOC-1`);
+  });
+
   it("continues detailed report rows through the public tool schema", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ message: { columns: [{ fieldname: "voucher_no", label: "Voucher" }], result: [{ voucher_no: "A" }, { voucher_no: "B" }, { voucher_no: "C" }] } })));
     const result = await invokeTool("get_general_ledger", { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-30", offset: 1, limit: 1 });
@@ -451,6 +537,7 @@ describe("service MCP authentication", () => {
 
   it.each([
     ["list_suppliers", { offset: -1 }], ["list_sales_invoices", { offset: 1.5 }],
+    ["list_work_orders", { planned_start_from_date: "2026-09-30", planned_start_to_date: "2026-09-01" }],
     ["get_document", { doctype: "Sales Invoice", name: "INV-1", detail_limit: 51 }],
     ["get_general_ledger", { company: "Example Company", from_date: "2026-09-01", to_date: "2026-09-30", offset: -1 }],
   ] as const)("rejects invalid page bounds for %s before a request", async (tool, args) => {
@@ -520,13 +607,13 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[1].text).ranking).toEqual(result.structuredContent?.ranking);
   });
 
-  it("advertises valid summary options and object output contracts for all 30 tools", async () => {
+  it("advertises valid summary options and object output contracts for all 33 tools", async () => {
     const request = new Request(serviceToolRequest("gateway-token", "ignored", {}), { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
     const response = await handleServiceMcpRequest(request, serviceEnv(await apiTokenSite()), executionContext());
     const body = await response.text();
     const data = body.split("\n").find((line) => line.startsWith("data: "));
     const tools = JSON.parse(data?.slice(6) ?? body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> }; outputSchema: { type?: string }; annotations: { readOnlyHint: boolean; destructiveHint: boolean } }>;
-    expect(tools).toHaveLength(30);
+    expect(tools).toHaveLength(33);
     const transactions = new Set(["list_sales_invoices", "list_purchase_invoices", "list_sales_orders", "list_purchase_orders", "list_payments", "list_bank_transactions"]);
     for (const tool of tools) {
       expect(tool.outputSchema.type, tool.name).toBe("object");

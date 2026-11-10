@@ -90,8 +90,9 @@ try {
     return body.result;
   }
   const tools = (await rpc("all", "tools/list", {})).tools;
-  assert.equal(tools.length, 30);
+  assert.equal(tools.length, 33);
   const schemas = new Map(tools.map((tool) => [tool.name, z.fromJSONSchema(tool.outputSchema)]));
+  for (const tool of ["list_work_orders", "list_boms", "list_job_cards"]) assert.ok(schemas.has(tool));
   async function call(role, name, args = {}, errorCode) {
     const result = await rpc(role, "tools/call", { name, arguments: args });
     if (errorCode) {
