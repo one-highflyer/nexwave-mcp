@@ -1,9 +1,11 @@
-const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+// A 5 MiB PDF needs about 6.7 MiB as base64, plus its MCP and SSE envelopes.
+const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const RESPONSE_TIMEOUT_MS = 60_000;
 export const SERVICE_ERROR_FORMAT_HEADER = "X-MCP-Error-Format";
 const SAFE_ERROR_CODES = new Set([
   "INVALID_ARGUMENT", "AUTHENTICATION_REQUIRED", "NOT_FOUND", "PERMISSION_DENIED",
   "RESULT_TOO_LARGE", "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE",
+  "WRITE_OUTCOME_UNKNOWN", "CONFLICT", "VALIDATION_FAILED",
 ]);
 
 /** Return finite service tool replies as JSON. OAuth and MCP error semantics stay unchanged. */

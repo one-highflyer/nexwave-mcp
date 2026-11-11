@@ -7,11 +7,55 @@ import {
 } from "../src/service-mcp";
 import { encryptSecret, sha256 } from "../src/security";
 import type { Env, SiteRecord } from "../src/types";
+import { MAX_PDF_BYTES } from "../src/pdf-tool";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
 
 describe("service MCP authentication", () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+
+  it.each([2 * 1024 * 1024, MAX_PDF_BYTES])("delivers an embedded PDF of %i bytes through the service adapter", async (size) => {
+    const pdf = new Uint8Array(size);
+    pdf.set(new TextEncoder().encode("%PDF-1.7\n"));
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(Response.json({ data: { name: "QTN-001", doctype: "Quotation", docstatus: 0 } }))
+      .mockResolvedValueOnce(new Response(pdf, { headers: { "Content-Type": "application/pdf" } })));
+    const response = await handleServiceMcpRequest(serviceToolRequest("gateway-token", "get_document_pdf", { doctype: "Quotation", name: "QTN-001" }), serviceEnv(await apiTokenSite()), executionContext());
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/json");
+    const body = await response.json() as { result: { isError?: boolean; structuredContent: { size_bytes: number }; content: Array<{ type: string; resource?: { blob: string } }> } };
+    expect(body.result.isError).not.toBe(true);
+    expect(body.result.structuredContent.size_bytes).toBe(size);
+    const blob = body.result.content.find((content) => content.type === "resource")?.resource?.blob;
+    expect(blob?.length).toBe(4 * Math.ceil(size / 3));
+    expect(atob(blob!).length).toBe(size);
+  });
+
+  it("preserves an uncertain write's reconciliation instructions through service compatibility mode", async () => {
+    const site = { ...await apiTokenSite(), write_capabilities: '["quotations"]' };
+    const env = serviceEnv(site);
+    env.NEXWAVE_MCP_DB = { prepare(query: string) { return { bind() { return {
+      first: async () => query.includes("FROM sites") ? site : null,
+      run: async () => ({ meta: { changes: 1 } }),
+    }; } }; } } as unknown as D1Database;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") throw new Error("Lost connection after save");
+      return Response.json({ data: { name: "CUST-001" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const request = serviceToolRequest("gateway-token", "create_draft_quotation", {
+      request_key: "uncertain-service-save", company: "Example Company", quotation_to: "Customer", party_name: "CUST-001", items: [{ item_code: "ITEM-001", qty: 1 }],
+    });
+    request.headers.set("X-MCP-Error-Format", "result");
+    const response = await handleServiceMcpRequest(request, env, executionContext());
+    expect(response.status).toBe(200);
+    const body = await response.json() as { result: { isError: boolean; structuredContent: { error: { code: string; message: string; retryable: boolean } } } };
+    expect(body.result.isError).toBe(false);
+    expect(body.result.structuredContent.error).toMatchObject({ code: "WRITE_OUTCOME_UNKNOWN", retryable: false });
+    expect(body.result.structuredContent.error.message).toContain("reconcile this request key");
+    expect(body.result.structuredContent.error.message).toContain("Do not retry with a new key");
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
 
   it("allows a service data request to complete after the former eight-second limit", async () => {
     vi.useFakeTimers();

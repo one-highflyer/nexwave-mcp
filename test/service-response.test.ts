@@ -16,7 +16,7 @@ it("returns JSON without changing the error flag, content or request ID", async 
   expect(await response.json()).toEqual(payload);
 });
 
-it.each(["INVALID_ARGUMENT", "UPSTREAM_TIMEOUT", "PERMISSION_DENIED", "NOT_FOUND"])("delivers an explicit opt-in %s envelope", async (code) => {
+it.each(["INVALID_ARGUMENT", "UPSTREAM_TIMEOUT", "PERMISSION_DENIED", "NOT_FOUND", "WRITE_OUTCOME_UNKNOWN", "CONFLICT", "VALIDATION_FAILED"])("delivers an explicit opt-in %s envelope", async (code) => {
   const req = request();
   req.headers.set(SERVICE_ERROR_FORMAT_HEADER, "result");
   const error = { code, message: "Safe explanation", retryable: code === "UPSTREAM_TIMEOUT" };
@@ -84,8 +84,12 @@ it("preserves JSON, discovery, notifications, batches and malformed requests", a
   expect(await withServiceToolJsonResponse(request(), async () => json)).toBe(json);
 });
 
-it.each(["data: invalid\n\n", `data: ${JSON.stringify(payload)}`, "data: {}\n\n", ":" + "x".repeat(2 * 1024 * 1024)])("rejects malformed, incomplete or oversized streams safely", async (body) => {
+it.each(["data: invalid\n\n", `data: ${JSON.stringify(payload)}`, "data: {}\n\n"])("rejects malformed or incomplete streams safely", async (body) => {
   await expect(withServiceToolJsonResponse(request(), async () => sse(body))).rejects.toBeInstanceOf(Error);
+});
+
+it("keeps the service response bounded above its PDF-compatible transport budget", async () => {
+  await expect(withServiceToolJsonResponse(request(), async () => sse(":" + "x".repeat(8 * 1024 * 1024)))).rejects.toThrow("exceeds limit");
 });
 
 it("cancels and unlocks a stalled stream at the deadline", async () => {
