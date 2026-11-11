@@ -10,6 +10,8 @@ export interface Env {
 }
 
 export type SiteAuthType = "oauth" | "api_token";
+export const WRITE_CAPABILITIES = ["quotations", "leads", "customers"] as const;
+export type WriteCapability = typeof WRITE_CAPABILITIES[number];
 
 export interface SiteRecord {
   id: string;
@@ -25,6 +27,8 @@ export interface SiteRecord {
   enabled: number;
   created_at: string;
   updated_at: string;
+  /** Missing on legacy fixtures; migration defaults all existing connections to read-only. */
+  write_capabilities?: string;
 }
 
 interface NexWaveAuthPropsBase {
@@ -34,6 +38,7 @@ interface NexWaveAuthPropsBase {
   siteName: string;
   baseUrl: string;
   user: string;
+  writeCapabilities?: WriteCapability[];
 }
 
 export interface NexWaveOAuthAuthProps extends NexWaveAuthPropsBase {

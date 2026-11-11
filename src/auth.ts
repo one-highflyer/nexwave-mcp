@@ -9,6 +9,7 @@ import { Hono } from "hono";
 import { renderConsent, renderErrorPage } from "./consent";
 import { audit, getSite, getSiteByBaseUrl } from "./db";
 import { exchangeFrappeCode, getLoggedUser, refreshFrappeToken } from "./frappe";
+import { grantedWriteCapabilities, WRITE_SCOPES } from "./write-access";
 import {
   clearCookie,
   cookieName,
@@ -199,8 +200,10 @@ authApp.get("/oauth/frappe/callback", async (context) => {
       upstreamExpiresAt: Date.now() + (token.expires_in ?? 3600) * 1000,
       upstreamClientId: site.client_id,
       upstreamClientSecret: clientSecret,
+      writeCapabilities: grantedWriteCapabilities(stored.oauthRequest.scope, site.write_capabilities),
     };
-    const scope = stored.oauthRequest.scope.filter((value) => value === LOCAL_SCOPE);
+    const scope = stored.oauthRequest.scope.filter((value) => value === LOCAL_SCOPE
+      || (WRITE_SCOPES.includes(value) && props.writeCapabilities?.some((capability) => value === `nexwave:write:${capability}`)));
     const { redirectTo } = await context.env.OAUTH_PROVIDER.completeAuthorization({
       request: stored.oauthRequest,
       userId,
@@ -228,16 +231,18 @@ export async function refreshUpstreamOnTokenExchange(
 ): Promise<TokenExchangeCallbackResult | void> {
   const props = options.props as NexWaveAuthProps | undefined;
   if (!props || props.authType === "api_token" || !props.upstreamAccessToken) return;
+  const tokenProps = (full: NexWaveOAuthAuthProps) => ({ ...full, writeCapabilities: grantedWriteCapabilities(options.requestedScope ?? options.scope, full.writeCapabilities) });
 
   if (options.grantType === GrantType.REFRESH_TOKEN) {
     const refreshed = await refreshFrappeToken(props);
     return {
       newProps: refreshed,
+      accessTokenProps: tokenProps(refreshed),
       accessTokenTTL: upstreamTtl(refreshed),
     };
   }
 
-  return { accessTokenTTL: upstreamTtl(props) };
+  return { accessTokenProps: tokenProps(props), accessTokenTTL: upstreamTtl(props) };
 }
 
 function upstreamTtl(props: NexWaveOAuthAuthProps): number {

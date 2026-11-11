@@ -62,7 +62,7 @@ The Worker is the protocol and security boundary between each AI client and each
 | --- | --- |
 | MCP client | Discovers the server, authenticates, and calls tools |
 | Cloudflare Worker | Handles MCP, OAuth, tool validation, and Frappe REST requests |
-| D1 | Stores the private site registry, encrypted OAuth or API-token credentials, service token hashes, and sign-in audit events |
+| D1 | Stores the private site registry, encrypted credentials, service token hashes, sign-in audit events, and write-request reservations |
 | KV | Stores short-lived OAuth state, grants, and MCP tokens |
 | NexWave site | Authenticates the user and applies normal Frappe permissions |
 
@@ -72,10 +72,10 @@ The Worker is the protocol and security boundary between each AI client and each
 2. The Worker asks the user for their exact NexWave site URL. It does not show a list of registered sites.
 3. The Worker matches the URL origin against its private D1 registry.
 4. The browser moves to the selected NexWave site for Frappe OAuth approval with PKCE S256.
-5. After approval, the Worker returns control to the MCP client and issues an MCP token with the `nexwave:read` scope.
+5. After approval, the Worker returns control to the MCP client and issues an MCP token with read access and only the requested write scopes enabled for that connection.
 6. Each tool call uses the signed-in user's Frappe access token. Frappe applies that user's roles and document permissions.
 
-Non-interactive clients can use the separate `/service/mcp` route. When an administrator registers a fixed API-token site, the Worker verifies the Frappe credentials and returns a generated service token once. It stores only the service-token hash and encrypted Frappe credentials in D1. A service client sends the generated token in the `X-NexWave-Service-Token` header. This route exposes the same read-only tool catalogue as `/mcp`.
+Non-interactive clients can use the separate `/service/mcp` route. When an administrator registers a fixed API-token site, the Worker verifies the Frappe credentials and returns a generated service token once. It stores only the service-token hash and encrypted Frappe credentials in D1. A service client sends the generated token in the `X-NexWave-Service-Token` header. This route exposes the same tool catalogue as `/mcp`. Write tools require explicit connection capabilities and normal Frappe permissions.
 
 Legacy JSON-RPC service tool calls receive finite `application/json` replies. Standard MCP tool failures retain `isError: true` by default. Clients that discard these errors can opt in with `X-MCP-Error-Format: result`. In that mode only, tool failures are delivered as normal MCP results containing `status: "error"`, `ok: false`, and a safe `error` object with `code`, `message`, and `retryable`. The client must check this envelope before using any data. Authentication failures and protocol errors keep their normal semantics. The OAuth `/mcp` route does not use this option.
 
@@ -117,7 +117,7 @@ Add the site at `/admin`, select **Fixed API token**, and enter the API key and 
 
 ## Available tools
 
-All tools are read-only. List results and report output are bounded to keep MCP responses manageable.
+The catalogue has 46 tools: 42 read tools and four optional write tools. Connections remain read-only unless an administrator enables a write capability. List results and report output are bounded.
 
 ### Connection and master data
 
@@ -174,6 +174,42 @@ Use `get_document` for BOM components and operations, Work Order required items 
 
 Report names and filters are allowlisted. Detailed reports have date-range limits and all report responses have row limits.
 
+### Pricing, parties, quotations, and PDFs
+
+| Tool | Purpose |
+| --- | --- |
+| `list_item_prices` | Filter saved prices by item, price list, Customer/Supplier, buying/selling, currency, UOM, batch, and validity date |
+| `list_price_lists` | Find enabled buying, selling, or dual-purpose price lists |
+| `list_leads` | Find an existing prospect before creating another record |
+| `list_quotations` | Find Customer/Lead quotations by company, party, dates, and document state |
+| `list_tax_templates` | Find Sales/Purchase Taxes and Charges Templates for one company |
+| `list_terms_and_conditions` | Find enabled selling/buying terms templates |
+| `list_payment_terms_templates` | Find payment schedule templates |
+| `list_print_formats` | Find permitted enabled PDF print formats for a supported DocType |
+| `get_document_pdf` | Return a PDF using the saved document and selected print format |
+| `create_lead` | Create one Lead with optional email/mobile details |
+| `create_customer` | Create one Customer, using normal primary Contact creation when contact details are supplied |
+| `create_draft_quotation` | Create a draft addressed to a Customer or Lead |
+| `update_draft_quotation` | Change an existing draft with a concurrency timestamp |
+
+Reuse `list_customers`, `list_items`, and `list_suppliers`. `get_document` also supports Lead, Quotation, Item Price, Price List, both tax template DocTypes, Terms and Conditions, and Payment Terms Template. It returns quotation item/tax/payment rows and template detail rows with pagination. Quotation `modified` is required for updates.
+
+Item Price results are saved records, not a final offered rate. Customer/Supplier filters return only explicitly assigned records; they do not add general fallback prices. The quotation save uses ERPNext's server defaults, Pricing Rules, tax calculations, and normal validation. Omit item `rate` to fetch a rate; provide it for an explicit offered rate and review the saved result. No `preview_quotation` tool is provided.
+
+For `update_draft_quotation`, supply `expected_modified` exactly as returned by `get_document`. An `items` array replaces all item rows. Supply all items when changing the transaction date, currency, or price list so rates can be recalculated. The server resets inherited exchange rates and payment schedules when required. Tax template changes replace tax rows after checking template access, enabled status, and company. Terms templates are rendered by NexWave at print time. Explicit contact and address links refresh their copied email, mobile, and address text through permission-aware reads and the native address formatter. Customer/Lead and company are fixed on an existing quotation; create a new draft to change the recipient/company. These tools never submit, cancel, or email a quotation.
+
+PDF input is a supported DocType, exact document `name`, and optional `print_format` (default `Standard`), language, and `no_letterhead`. Print Format lookup uses normal Frappe Link selection permissions. PDF generation uses Frappe's normal read/print and draft-print settings. Results include an embedded `application/pdf` resource, limited to 5 MiB, and metadata. Download/display depends on the MCP client. No permanent public file URL is created.
+
+### Optional write access
+
+Apply migration `0003_write_tools.sql` before running this version. Existing site records default to no write capabilities. In `/admin`, enable only the required capabilities (`quotations`, `leads`, `customers`) when adding a connection, or use **Save access** for an existing connection. The admin API accepts `writeCapabilities` on site creation and `PATCH /api/admin/sites/:id/capabilities`. Disabling a capability is checked on every write.
+
+OAuth clients must reconnect and approve the corresponding scopes: `nexwave:write:quotations`, `nexwave:write:leads`, and/or `nexwave:write:customers`. A previous `nexwave:read` grant cannot write. Fixed-token connections use the administrator's selected capabilities. Both paths still require the upstream user's normal Create/Write permissions and document access. Customer contact details also require normal Contact creation permissions. Use a dedicated restricted user and omit Submit, Cancel, and Item Price write rights unless those effects are intended. ERPNext's normal save can update Item Prices when its auto-price settings and the user's permissions allow it.
+
+Every write requires `request_key` (8–128 letters, digits, `_` or `-`). Keep it stable with identical arguments after a lost response. A D1 reservation scoped to connection, user, operation, and key prevents duplicate dispatch. Reusing a key with different arguments fails. Completed replays read the current permission-visible document; they do not write again. Mutations have no automatic upstream retry.
+
+If a write returns `WRITE_OUTCOME_UNKNOWN`, check NexWave and ask an operator to reconcile the reservation. Do not retry with a new key. Pending/unknown reservations do not expire or resend automatically. An operator must verify the upstream outcome before any new action. D1 stores the argument hash, state, user, and resulting document name, not request bodies or document contents. Party duplicate checks use permission-visible exact matches; they cannot detect records hidden from the user or prevent simultaneous independent requests with different keys.
+
 ### Search and voice queries
 
 Directory tools search record IDs and display names. If the full phrase has no exact match, they make one bounded token search and compare normalized names, including common legal suffixes for companies and parties. Fallbacks preserve explicit filters and permissions. Partial or ambiguous names require confirmation. Empty search strings and the existing text-array list responses remain supported; `structuredContent` adds match status, candidates, and truncation metadata.
@@ -199,7 +235,7 @@ For example, `list_sales_invoices` with `{ "company": "Example Company", "curren
 
 Invoice lists and `get_document` include `party_account_currency` beside `outstanding_amount`. Sorting invoices by `outstanding_amount` requires an exact `party_account_currency` filter; a document `currency` filter alone does not make balances comparable. Sorting `grand_total` still requires document `currency`, and sorting `base_grand_total` requires one company. Ranking metadata names the amount field, currency, and source currency field in both structured and text output. Invoice total summaries remain in document currency.
 
-All 33 tools advertise object output schemas and read-only annotations. Successful results include `structuredContent` with their existing text content preserved. List contracts cover pages, count/total summaries, and party-confirmation results. All list tools advertise `summary: "count"`. The six sales, purchasing, payment, and bank transaction lists also advertise `"totals"`. Frappe enforces permissions.
+All 46 tools advertise object output schemas and correct read/write annotations. Successful results include `structuredContent` with their existing text content preserved. List contracts cover pages, count/total summaries, and party-confirmation results. Most list tools advertise `summary: "count"`; raw Item Price pages and bounded Print Format searches do not. The six sales, purchasing, payment, and bank transaction lists also advertise `"totals"`. Frappe enforces permissions.
 
 Standard row-based report tools accept `offset` and return `next_offset`, `row_count`, and visible completeness warnings. Each call reruns the report; output pagination does not reduce upstream report size or execution time. Compact summaries retain their existing complete totals and top-result limits.
 
@@ -298,7 +334,7 @@ GitHub Actions validates each push and pull request to `main`. It does not deplo
 - The public consent page does not enumerate registered site names or URLs.
 - Frappe remains the source of truth for user permissions.
 
-The POC records successful and failed sign-in events. It does not yet include a full audit viewer, write tools, per-tool scopes, automatic deployment, or managed secret rotation.
+The POC records sign-in events and write-request reservations. It does not yet include a full audit viewer, automatic deployment, or managed secret rotation. Write capabilities have separate OAuth scopes and connection controls.
 
 ## Quality checks
 
@@ -314,7 +350,7 @@ npx wrangler deploy --dry-run
 
 `test:live` creates a fresh ERPNext v15.109.0 site, MariaDB, and Redis from pinned container images. It bundles the actual Worker entry point, applies D1 migrations, registers generated API tokens, and calls `/service/mcp`. A test-only network bridge forwards requests to the real local Frappe API. Expected amounts come from synthetic invoices and payments, not a second copy of the tool query.
 
-The suite checks list pages, counts, totals, document and account currencies, item and payment-reference details, receivables/payables, sales, General Ledger, and access for three API users (all companies, one company, and no accounting access). It uses fixed January 2025 dates. The script removes its containers, volumes, and temporary credentials on exit. CI needs no repository secrets. Neither credentials nor site logs are uploaded.
+The suite checks list pages, counts, totals, currencies, document details, receivables/payables, sales, General Ledger, pricing lookups, new parties, draft quotations, pricing rules, tax changes, write replay, and access for full, company-restricted, denied, and read-only connections. It uses fixed January 2025 dates. The script removes its containers, volumes, and temporary credentials on exit. CI needs no repository secrets. Neither credentials nor site logs are uploaded.
 
 The `Live Frappe` and `Worker checks` jobs must both pass for the required `Validate` check to pass. This first backend covers the standard ERPNext API contract; NexWave app overrides and OAuth browser login need separate coverage.
 

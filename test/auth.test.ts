@@ -60,4 +60,11 @@ describe("OAuth consent privacy", () => {
     expect(html).toContain("Try again &lt;later&gt;.");
     expect(html).not.toContain("<later>");
   });
+
+  it("clearly shows requested write actions instead of calling the connection read-only", () => {
+    const html = renderConsent({ clientName: "Example" }, { scope: ["nexwave:read", "nexwave:write:quotations"] }, "pending", "csrf", { scriptNonce: "nonce" });
+    expect(html).toContain("read access and the write actions listed below");
+    expect(html).toContain("nexwave:write:quotations");
+    expect(html).not.toContain("wants read-only access");
+  });
 });

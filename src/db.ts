@@ -1,7 +1,7 @@
 import type { Env, SiteAuthType, SiteRecord } from "./types";
 
 const SITE_FIELDS = `id, display_name, base_url, auth_type, client_id, encrypted_client_secret,
-  encrypted_api_key, encrypted_api_secret, api_user, service_token_hash, enabled, created_at, updated_at`;
+  encrypted_api_key, encrypted_api_secret, api_user, service_token_hash, enabled, created_at, updated_at, write_capabilities`;
 
 export async function listSites(env: Env, enabledOnly = false): Promise<SiteRecord[]> {
   const where = enabledOnly ? " WHERE enabled = 1" : "";
@@ -43,8 +43,8 @@ export async function createSite(env: Env, site: Omit<SiteRecord, "created_at" |
   await env.NEXWAVE_MCP_DB.prepare(
     `INSERT INTO sites (
       id, display_name, base_url, auth_type, client_id, encrypted_client_secret,
-      encrypted_api_key, encrypted_api_secret, api_user, service_token_hash, enabled
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      encrypted_api_key, encrypted_api_secret, api_user, service_token_hash, enabled, write_capabilities
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       site.id,
@@ -58,6 +58,7 @@ export async function createSite(env: Env, site: Omit<SiteRecord, "created_at" |
       site.api_user,
       site.service_token_hash,
       site.enabled,
+      site.write_capabilities ?? "[]",
     )
     .run();
 }

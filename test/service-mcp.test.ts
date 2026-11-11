@@ -64,6 +64,7 @@ describe("service MCP authentication", () => {
         user: "service@example.com",
         upstreamApiKey: "api-key",
         upstreamApiSecret: "api-secret",
+        writeCapabilities: [],
       },
     });
   });
@@ -607,18 +608,20 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[1].text).ranking).toEqual(result.structuredContent?.ranking);
   });
 
-  it("advertises valid summary options and object output contracts for all 33 tools", async () => {
+  it("advertises output contracts and correct read/write annotations for all 46 tools", async () => {
     const request = new Request(serviceToolRequest("gateway-token", "ignored", {}), { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
     const response = await handleServiceMcpRequest(request, serviceEnv(await apiTokenSite()), executionContext());
     const body = await response.text();
     const data = body.split("\n").find((line) => line.startsWith("data: "));
     const tools = JSON.parse(data?.slice(6) ?? body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> }; outputSchema: { type?: string }; annotations: { readOnlyHint: boolean; destructiveHint: boolean } }>;
-    expect(tools).toHaveLength(33);
+    expect(tools).toHaveLength(46);
+    expect(tools.some((tool) => tool.name === "preview_quotation")).toBe(false);
+    const writes = new Set(["create_draft_quotation", "update_draft_quotation", "create_customer", "create_lead"]);
     const transactions = new Set(["list_sales_invoices", "list_purchase_invoices", "list_sales_orders", "list_purchase_orders", "list_payments", "list_bank_transactions"]);
     for (const tool of tools) {
       expect(tool.outputSchema.type, tool.name).toBe("object");
-      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: true, destructiveHint: false });
-      if (tool.name.startsWith("list_")) expect(tool.inputSchema.properties.summary.enum, tool.name).toEqual(transactions.has(tool.name) ? ["count", "totals"] : ["count"]);
+      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: !writes.has(tool.name), destructiveHint: tool.name === "update_draft_quotation" });
+      if (tool.name.startsWith("list_") && !["list_item_prices", "list_print_formats"].includes(tool.name)) expect(tool.inputSchema.properties.summary.enum, tool.name).toEqual(transactions.has(tool.name) ? ["count", "totals"] : ["count"]);
     }
   });
 

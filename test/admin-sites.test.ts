@@ -48,6 +48,7 @@ describe("admin site authentication modes", () => {
     expect(values[5]).toBeNull();
     expect(values[8]).toBe("service@example.com");
     expect(values[9]).toBe(await sha256(result.serviceToken));
+    expect(values[11]).toBe("[]");
     await expect(decryptSecret(String(values[6]), KEY)).resolves.toBe("api-key");
     await expect(decryptSecret(String(values[7]), KEY)).resolves.toBe("api-secret");
   });
@@ -80,6 +81,21 @@ describe("admin site authentication modes", () => {
     expect(values[4]).toBe("oauth-client-id");
     await expect(decryptSecret(String(values[5]), KEY)).resolves.toBe("oauth-client-secret");
     expect(values.slice(6, 10)).toEqual([null, null, null, null]);
+  });
+
+  it("enables only selected write capabilities when an administrator registers a connection", async () => {
+    const inserted: unknown[][] = [];
+    const response = await addSite({ displayName: "Demo", baseUrl: "https://demo.example.com", clientId: "client", clientSecret: "secret", writeCapabilities: ["quotations"] }, adminEnv(inserted));
+    expect(response.status).toBe(201);
+    expect(inserted[0][11]).toBe('["quotations"]');
+    expect(await response.json()).toMatchObject({ writeCapabilities: ["quotations"] });
+  });
+
+  it("rejects unknown capability names without storing a connection", async () => {
+    const inserted: unknown[][] = [];
+    const response = await addSite({ displayName: "Demo", baseUrl: "https://demo.example.com", clientId: "client", clientSecret: "secret", writeCapabilities: ["submit"] }, adminEnv(inserted));
+    expect(response.status).toBe(400);
+    expect(inserted).toEqual([]);
   });
 });
 
