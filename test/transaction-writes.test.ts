@@ -219,6 +219,70 @@ describe.each(modes)("$target draft writes", (mode) => {
     expect(up.maps()).toHaveLength(0); expect(up.saves()).toHaveLength(0);
   });
 
+  it("preserves a source percentage header discount for a partial conversion and returns the saved discount", async () => {
+    const up = upstream(mode);
+    const settings = { apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 12 };
+    Object.assign(up.state.sources.get(mode.sourceId)!, settings);
+    up.state.mapped = (doc) => ({ ...doc, ...settings });
+    Object.assign(up.state.current, { discount_amount: 2.4 });
+    const result = await executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode, { qty: 2 })] }));
+    expect(up.savedBody()).toMatchObject({ apply_discount_on: "Net Total", additional_discount_percentage: 10, items: [{ qty: 2 }] });
+    expect(up.savedBody().discount_amount ?? 0).toBe(0);
+    expect(result.structuredContent).toMatchObject({ document: { apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 2.4 } });
+  });
+
+  it("combines multiple sources with the same percentage discount and basis", async () => {
+    const up = upstream(mode); const other = `${mode.sourceId}-OTHER`;
+    const settings = { apply_discount_on: "Net Total", additional_discount_percentage: 10 };
+    Object.assign(up.state.sources.get(mode.sourceId)!, settings, { discount_amount: 12 });
+    up.state.sources.set(other, { ...source(mode, other as typeof mode.sourceId), ...settings, discount_amount: 24 });
+    up.state.mapped = (doc) => ({ ...doc, ...settings, discount_amount: 36 });
+    await executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode), linked(mode, { [mode.parent]: other })] }));
+    expect(up.maps()).toHaveLength(2); expect(up.saves()).toHaveLength(1);
+    expect(up.savedBody()).toMatchObject(settings);
+    expect(up.savedBody().discount_amount ?? 0).toBe(0);
+  });
+
+  it.each([
+    { apply_discount_on: "Net Total", additional_discount_percentage: 5 },
+    { apply_discount_on: "Grand Total", additional_discount_percentage: 10 },
+    { apply_discount_on: "Net Total", additional_discount_percentage: 0 },
+  ])("rejects mixed source header discount settings %j before conversion", async (different) => {
+    const up = upstream(mode); const ctx = environment(); const other = `${mode.sourceId}-OTHER`;
+    Object.assign(up.state.sources.get(mode.sourceId)!, { apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 12 });
+    up.state.sources.set(other, { ...source(mode, other as typeof mode.sourceId), ...different, discount_amount: 0 });
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode), linked(mode, { [mode.parent]: other })] }))).rejects.toThrow("INVALID_ARGUMENT");
+    expect(up.maps()).toHaveLength(0); expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("rejects discounted source lines mixed with unlinked lines before conversion", async () => {
+    const up = upstream(mode); const ctx = environment();
+    Object.assign(up.state.sources.get(mode.sourceId)!, { apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 12 });
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode), { ...item }] }))).rejects.toThrow("INVALID_ARGUMENT");
+    expect(up.maps()).toHaveLength(0); expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("rejects fixed-amount source header discounts rather than guessing a partial allocation", async () => {
+    const up = upstream(mode); const ctx = environment();
+    Object.assign(up.state.sources.get(mode.sourceId)!, { apply_discount_on: "Net Total", additional_discount_percentage: 0, discount_amount: 12 });
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("INVALID_ARGUMENT");
+    expect(up.maps()).toHaveLength(0); expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("retains an existing draft's fixed header discount during a header-only update", async () => {
+    const up = upstream(mode);
+    Object.assign(up.state.current, { apply_discount_on: "Grand Total", additional_discount_percentage: 0, discount_amount: 7 });
+    up.state.current.items = [{ name: "TARGET-ROW-1", ...linked(mode) }];
+    const sourceSettings = { apply_discount_on: "Net Total", additional_discount_percentage: 0, discount_amount: 12 };
+    Object.assign(up.state.sources.get(mode.sourceId)!, sourceSettings);
+    up.state.mapped = (doc) => ({ ...doc, ...sourceSettings });
+    const fields = mode.party === "customer" ? { delivery_date: "2025-02-01" } : { bill_no: "BILL-DISCOUNT" };
+    const result = await executeTransactionWrite(environment().env, props, mode.update, update(mode, fields));
+    expect(up.saves()).toHaveLength(1);
+    for (const field of ["apply_discount_on", "additional_discount_percentage", "discount_amount"]) expect(up.savedBody()).not.toHaveProperty(field);
+    expect(result.structuredContent).toMatchObject({ document: { apply_discount_on: "Grand Total", additional_discount_percentage: 0, discount_amount: 7 } });
+  });
+
   it("keeps source links and current child IDs when updates omit link fields", async () => {
     const up = upstream(mode); up.state.current.items = [{ name: "TARGET-ROW-1", ...linked(mode), rate: 12, conversion_factor: 1, project: "PROJECT-1" }];
     const result = await executeTransactionWrite(environment().env, props, mode.update, update(mode, { items: [{ name: "TARGET-ROW-1", ...item, qty: 3 }] }));

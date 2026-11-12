@@ -167,12 +167,14 @@ def run():
         "quotation_to": "Customer", "party_name": "MCP Buyer",
         "transaction_date": "2025-01-10", "valid_till": "2099-12-31",
         "currency": "NZD", "selling_price_list": "MCP NZD", "ignore_pricing_rule": 1,
+        "apply_discount_on": "Net Total", "additional_discount_percentage": 10,
         "items": [{"item_code": quote_items[1], "qty": 6, "uom": "Nos", "rate": 40},
             {"item_code": quote_items[1], "qty": 9, "uom": "Nos", "rate": 45}]}).insert()
     source_quotation.submit()
     source_purchase_order = frappe.get_doc({"doctype": "Purchase Order", "company": alpha.name,
         "supplier": "MCP Supplier", "transaction_date": "2025-01-10", "schedule_date": "2025-01-20",
         "currency": "NZD", "buying_price_list": "MCP NZD", "ignore_pricing_rule": 1,
+        "apply_discount_on": "Net Total", "additional_discount_percentage": 10,
         "items": [{"item_code": quote_items[1], "qty": 5, "uom": "Nos", "rate": 17,
                 "schedule_date": "2025-01-20", "expense_account": alpha.default_expense_account,
                 "cost_center": alpha.cost_center},

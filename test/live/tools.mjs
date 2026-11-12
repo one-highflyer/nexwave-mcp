@@ -427,6 +427,8 @@ try {
   await call("denied", "create_draft_sales_order", salesOrderArgs, "PERMISSION_DENIED");
   const salesOrder = await call("all", "create_draft_sales_order", salesOrderArgs);
   assert.equal(salesOrder.document.docstatus, 0);
+  assert.equal(salesOrder.document.additional_discount_percentage, 10);
+  assert.equal(salesOrder.document.grand_total, 121.5, "Partial quotation conversion must retain its percentage document discount");
   assert.deepEqual(salesOrder.document.items.map((row) => [row.qty, row.prevdoc_docname, row.quotation_item]), [
     [3, sourceQuote.name, sourceQuote.items[1].name],
   ], "A partial order must reference the selected duplicate source row");
@@ -438,6 +440,8 @@ try {
     items: [{ name: savedSalesOrder.items[0].name, item_code: fixture.quote_items[1], qty: 4 }] };
   await call("readonly", "update_draft_sales_order", salesOrderUpdate, "PERMISSION_DENIED");
   const updatedSalesOrder = await call("all", "update_draft_sales_order", salesOrderUpdate);
+  assert.equal(updatedSalesOrder.document.additional_discount_percentage, 10);
+  assert.equal(updatedSalesOrder.document.grand_total, 162);
   assert.deepEqual(updatedSalesOrder.document.items.map((row) => [row.name, row.qty, row.prevdoc_docname, row.quotation_item]), [
     [savedSalesOrder.items[0].name, 4, sourceQuote.name, sourceQuote.items[1].name],
   ], "A quantity update must preserve the target child name and omitted source references");
@@ -473,6 +477,8 @@ try {
   await call("denied", "create_draft_purchase_invoice", purchaseInvoiceArgs, "PERMISSION_DENIED");
   const purchaseInvoice = await call("all", "create_draft_purchase_invoice", purchaseInvoiceArgs);
   assert.equal(purchaseInvoice.document.docstatus, 0);
+  assert.equal(purchaseInvoice.document.additional_discount_percentage, 10);
+  assert.equal(purchaseInvoice.document.grand_total, 39.6, "Partial PO conversion must retain its percentage document discount");
   assert.equal(purchaseInvoice.document.bill_no, purchaseInvoiceArgs.bill_no);
   assert.equal(purchaseInvoice.document.bill_date, purchaseInvoiceArgs.bill_date);
   assert.deepEqual(purchaseInvoice.document.items.map((row) => [row.qty, row.purchase_order, row.po_detail]), [
@@ -486,6 +492,8 @@ try {
     items: [{ name: savedPurchaseInvoice.items[0].name, item_code: fixture.quote_items[1], qty: 3 }] };
   await call("readonly", "update_draft_purchase_invoice", purchaseInvoiceUpdate, "PERMISSION_DENIED");
   const updatedPurchaseInvoice = await call("all", "update_draft_purchase_invoice", purchaseInvoiceUpdate);
+  assert.equal(updatedPurchaseInvoice.document.additional_discount_percentage, 10);
+  assert.equal(updatedPurchaseInvoice.document.grand_total, 59.4);
   assert.deepEqual(updatedPurchaseInvoice.document.items.map((row) => [row.name, row.qty, row.purchase_order, row.po_detail]), [
     [savedPurchaseInvoice.items[0].name, 3, sourcePurchaseOrder.name, sourcePurchaseOrder.items[1].name],
   ], "A bill quantity update must preserve the target child name and omitted source references");

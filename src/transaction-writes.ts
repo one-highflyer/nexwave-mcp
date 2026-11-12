@@ -36,14 +36,14 @@ type Row = Record<string, unknown>;
 type Target = "Sales Order" | "Purchase Invoice";
 const LINKS = ["prevdoc_docname", "quotation_item", "purchase_order", "po_detail", "purchase_receipt", "pr_detail", "material_request", "material_request_item", "sales_order", "sales_order_item", "purchase_order_item"];
 const MAPPED_ITEM_FIELDS = [...Object.keys(ITEM), "conversion_factor", "price_list_rate", "discount_amount", "delivery_date", "expense_account", "cost_center", "project", "item_tax_template", ...LINKS];
-const MAPPED_HEADERS = ["order_type", "currency", "conversion_rate", "selling_price_list", "buying_price_list", "price_list_currency", "plc_conversion_rate", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "address_display", "supplier_address", "shipping_address_name", "shipping_address", "contact_person", "contact_display", "contact_email", "contact_mobile", "credit_to", "ignore_pricing_rule"];
+const MAPPED_HEADERS = ["order_type", "apply_discount_on", "additional_discount_percentage", "currency", "conversion_rate", "selling_price_list", "buying_price_list", "price_list_currency", "plc_conversion_rate", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "address_display", "supplier_address", "shipping_address_name", "shipping_address", "contact_person", "contact_display", "contact_email", "contact_mobile", "credit_to", "ignore_pricing_rule"];
 const TAX_FIELDS = ["charge_type", "row_id", "account_head", "description", "included_in_print_rate", "included_in_paid_amount", "cost_center", "rate", "tax_amount", "account_currency", "add_deduct_tax", "category"];
 
 export function registerTransactionWrites(server: McpServer, currentProps: () => Promise<NexWaveAuthProps>, env?: Env) {
   for (const name of Object.keys(SCHEMAS) as Operation[]) {
     const target = name.includes("sales_order") ? "Sales Order" : "Purchase Invoice";
     registerWriteTool(server, name, {
-      description: `${name.startsWith("create_") ? "Create" : "Update"} one draft ${target}. Optional item source links use exact document and child row IDs and native ERPNext conversion. Sources must be submitted, open and match company, party and currency; quotations must address a Customer. Up to 50 items and 5 source documents. Updates require expected_modified and retain source links on named rows. Purchase Invoices are ordinary unpaid drafts without stock updates. Drafts do not reserve source quantities. Review saved totals before submission.`,
+      description: `${name.startsWith("create_") ? "Create" : "Update"} one draft ${target}. Optional item source links use exact document and child row IDs and native ERPNext conversion. Sources must be submitted, open and match company, party and currency; quotations must address a Customer. Up to 50 items and 5 source documents. Updates require expected_modified and retain source links on named rows. Purchase Invoices are ordinary unpaid drafts without stock updates. Linked creates retain compatible percentage document discounts; fixed document discounts require the normal NexWave workflow. Drafts do not reserve source quantities. Review saved totals before submission.`,
       inputSchema: SCHEMAS[name],
     }, async (input) => executeTransactionWrite(env, await currentProps(), name, input));
   }
@@ -113,6 +113,13 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
     if (!sourceRow || sourceRow.item_code !== row.item_code || (row.uom && row.uom !== sourceRow.uom)) throw invalid("The source row must belong to that document and match the item and UOM.");
     source.rows.add(String(row[rowField]));
   }
+  if (!current && sources.size) {
+    const settings = [...sources.values()].map(({ document }) => discountSettings(document));
+    if (settings.some((s) => s.additional_discount_percentage > 0)
+      && (settings.some((s) => canonical(s) !== canonical(settings[0])) || rows.some((row) => !row[parentField]))) {
+      throw invalid("A document discount requires all lines to use sources with the same discount percentage and basis.");
+    }
+  }
   if (values.taxes_and_charges) {
     const template = await frappeGet<Row>(props, sales ? "Sales Taxes and Charges Template" : "Purchase Taxes and Charges Template", String(values.taxes_and_charges));
     if (template.company !== effective.company || template.disabled) throw invalid("Use an enabled tax template for this company.");
@@ -136,6 +143,7 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
       const mapped = await frappeMapDraft(props, target, sourceName, [...source.rows]);
       if (mapped.company !== effective.company || mapped[sales ? "customer" : "supplier"] !== effective[sales ? "customer" : "supplier"] || mapped.currency !== source.document.currency) throw invalid("The converted draft does not match the target company, party and currency.");
       if (sales && (mapped.order_type ?? "Sales") !== (source.document.order_type ?? "Sales")) throw invalid("The converted draft does not match the source quotation order type.");
+      if (!current && canonical(discountSettings(mapped)) !== canonical(discountSettings(source.document))) throw invalid("The converted draft does not preserve the source document discount.");
       const taxes = documentRows(mapped, "taxes").map((r) => select(r, TAX_FIELDS));
       const signature = canonical(taxes.map((row) => {
         const { tax_amount, ...settings } = row;
@@ -171,6 +179,7 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
     if (!sales) document.update_stock = 0;
     const saved = await frappeWrite(props, target, document, current ? String(input.name) : undefined);
     verifySavedLinks(saved, savedRows);
+    if (!current && sources.size) verifySavedDiscount(saved, sources.values().next().value!.document);
     await trustedEnv.NEXWAVE_MCP_DB.prepare("UPDATE write_requests SET state = 'complete', document_name = ? WHERE site_id = ? AND user_id = ? AND operation = ? AND request_key = ?")
       .bind(saved.name, ...bindings).run();
     return result(target, saved, false);
@@ -213,7 +222,20 @@ function verifySavedLinks(saved: Row, planned: Row[]) {
     if (!after || LINKS.some((f) => before[f] && before[f] !== after[f])) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The saved source links could not be confirmed.");
   }
 }
-const RESULT_FIELDS = ["name", "modified", "docstatus", "status", "company", "customer", "customer_name", "supplier", "supplier_name", "order_type", "transaction_date", "delivery_date", "posting_date", "due_date", "bill_no", "bill_date", "currency", "selling_price_list", "buying_price_list", "taxes_and_charges", "payment_terms_template", "tc_name", "conversion_rate", "total", "net_total", "grand_total", "total_taxes_and_charges", "rounded_total", "update_stock"];
+function discountSettings(document: Row) {
+  const percentage = Number(document.additional_discount_percentage ?? 0);
+  const amount = Number(document.discount_amount ?? 0);
+  if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100 || !Number.isFinite(amount)) throw invalid("The source document has invalid discount settings.");
+  if (amount !== 0 && percentage === 0) throw invalid("Linked draft creation does not support fixed document discounts. Use the normal NexWave conversion workflow for this source.");
+  return { additional_discount_percentage: percentage, apply_discount_on: percentage ? String(document.apply_discount_on ?? "Grand Total") : "" };
+}
+function verifySavedDiscount(saved: Row, source: Row) {
+  try {
+    if (canonical(discountSettings(saved)) === canonical(discountSettings(source))) return;
+  } catch { /* A saved result cannot be reported as a rejected, uncommitted request. */ }
+  throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The saved source discount could not be confirmed.");
+}
+const RESULT_FIELDS = ["name", "modified", "docstatus", "status", "company", "customer", "customer_name", "supplier", "supplier_name", "order_type", "apply_discount_on", "additional_discount_percentage", "discount_amount", "transaction_date", "delivery_date", "posting_date", "due_date", "bill_no", "bill_date", "currency", "selling_price_list", "buying_price_list", "taxes_and_charges", "payment_terms_template", "tc_name", "conversion_rate", "total", "net_total", "grand_total", "total_taxes_and_charges", "rounded_total", "update_stock"];
 function result(doctype: Target, saved: Row, replayed: boolean) {
   return structuredResult({ doctype, name: saved.name, replayed, document: { ...select(saved, RESULT_FIELDS), ...documentDetails(doctype, saved, 0, 50) }, note: replayed ? "This request was already completed. The document shown is its current permission-visible state." : "Draft saved. Review its source links, prices, taxes and totals. Drafts do not reserve source quantities." });
 }

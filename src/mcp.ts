@@ -57,10 +57,10 @@ type ReadableDoctype = keyof typeof READABLE_DOCTYPES;
 
 // Draft edit fields are read from one document, without increasing list payloads.
 const TRANSACTION_DOCUMENT_FIELDS: Partial<Record<ReadableDoctype, readonly string[]>> = {
-  Quotation: ["order_type"],
-  "Purchase Order": ["modified", "docstatus"],
-  "Sales Order": ["modified", "docstatus", "order_type", "selling_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "shipping_address_name", "contact_person"],
-  "Purchase Invoice": ["modified", "docstatus", "bill_no", "bill_date", "buying_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "credit_to", "update_stock", "is_return", "return_against", "is_paid", "paid_amount", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "supplier_address", "shipping_address", "contact_person"],
+  Quotation: ["order_type", "apply_discount_on", "additional_discount_percentage", "discount_amount"],
+  "Purchase Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount"],
+  "Sales Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "order_type", "selling_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "shipping_address_name", "contact_person"],
+  "Purchase Invoice": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "bill_no", "bill_date", "buying_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "credit_to", "update_stock", "is_return", "return_against", "is_paid", "paid_amount", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "supplier_address", "shipping_address", "contact_person"],
 };
 
 export function createNexWaveServer(env?: Env): McpServer {
