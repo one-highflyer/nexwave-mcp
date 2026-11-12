@@ -149,7 +149,7 @@ function renderSite(site, index) {
   });
   remove.addEventListener("click", async () => {
     if (loading || mutating || saving || removing) return;
-    if (!confirm("Remove " + site.displayName + "? Its MCP clients will lose access.")) return;
+    if (!confirm("Remove " + site.displayName + "? This deletes the saved connection settings.")) return;
     removing = true;
     mutating = true;
     remove.disabled = true;
