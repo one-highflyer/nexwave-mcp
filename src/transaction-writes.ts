@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { documentDetails } from "./document-details";
-import { frappeGet, frappeMapDraft, frappeSiteDate, frappeWrite } from "./frappe";
+import { frappeGet, frappeList, frappeMapDraft, frappeSiteDate, frappeWrite } from "./frappe";
 import { sha256 } from "./security";
 import { registerWriteTool } from "./tool-contract";
 import { structuredResult, ToolError } from "./tool-result";
@@ -214,7 +214,6 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
 async function mapLeadQuotation(props: NexWaveAuthProps, source: Row, selectedRows: Set<string>, customer: string): Promise<Row> {
   const unsupported = (setting: string) => invalid(`Lead quotation conversion does not support ${setting}. Use the normal NexWave conversion workflow.`);
   if (typeof source.currency !== "string" || !source.currency
-    || !(source.valid_till === null || typeof source.valid_till === "string")
     || !["conversion_rate", "plc_conversion_rate"].every((field) => typeof source[field] === "number" && Number.isFinite(source[field]) && Number(source[field]) > 0)
     || !["additional_discount_percentage", "discount_amount"].every((field) => typeof source[field] === "number" && Number.isFinite(source[field]))) {
     throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The Lead quotation's currency and discount settings could not be confirmed. Check field permissions or use the normal NexWave conversion workflow.");
@@ -222,9 +221,10 @@ async function mapLeadQuotation(props: NexWaveAuthProps, source: Row, selectedRo
   if (source.has_unit_price_items) throw unsupported("unit-price items");
   if (source.referral_sales_partner) throw unsupported("referral sales partners");
   if (Array.isArray(source.sales_team) && source.sales_team.length) throw unsupported("source sales-team allocations");
-  if (source.valid_till) {
-    if (!DATE.safeParse(source.valid_till).success || !DATE.safeParse(source.transaction_date).success
-      || String(source.valid_till) < String(source.transaction_date) || String(source.valid_till) < await frappeSiteDate(props)) {
+  const validTill = await leadQuotationExpiry(props, source);
+  if (validTill) {
+    if (!DATE.safeParse(validTill).success || !DATE.safeParse(source.transaction_date).success
+      || validTill < String(source.transaction_date) || validTill < await frappeSiteDate(props)) {
       throw invalid("Expired or invalid Lead quotations require the normal NexWave conversion workflow.");
     }
   }
@@ -245,6 +245,24 @@ async function mapLeadQuotation(props: NexWaveAuthProps, source: Row, selectedRo
   const headers = select(source, MAPPED_HEADERS.filter((field) => field !== "payment_terms_template"));
   return { ...headers, doctype: "Sales Order", company: source.company, customer, currency: source.currency,
     items, taxes: documentRows(source, "taxes").map((row) => select(row, TAX_FIELDS)) };
+}
+
+async function leadQuotationExpiry(props: NexWaveAuthProps, source: Row): Promise<string | null> {
+  const unreadable = () => new ToolError("UPSTREAM_INVALID_RESPONSE", "The Lead quotation's expiry date could not be confirmed. Check field permissions or use the normal NexWave conversion workflow.");
+  let expiry = source.valid_till;
+  if (expiry === undefined) {
+    // Document JSON omits database NULL dates. List queries preserve NULL and
+    // remove unreadable columns, so an absent field must never be treated as blank.
+    if (typeof source.modified !== "string" || !source.modified.trim()) throw unreadable();
+    const rows = await frappeList<Row>(props, "Quotation", ["name", "modified", "valid_till"], {
+      filters: [["Quotation", "name", "=", source.name]], limit: 1,
+    });
+    if (rows.length !== 1 || rows[0].name !== source.name || typeof rows[0].modified !== "string" || !rows[0].modified.trim()) throw unreadable();
+    if (rows[0].modified !== source.modified) throw new ToolError("CONFLICT", "The source quotation changed. Read it again before creating or updating the Sales Order.");
+    expiry = rows[0].valid_till;
+  }
+  if (expiry !== null && typeof expiry !== "string") throw unreadable();
+  return expiry;
 }
 
 function mergeRows(requested: Row[], current?: Row): Row[] {

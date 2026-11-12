@@ -33,6 +33,7 @@ const bundle = await build({ entryPoints: [root + "src/index.ts"], bundle: true,
   external: ["cloudflare:*", "node:*"], });
 const adminToken = randomBytes(32).toString("hex");
 let upstreamCalls = 0;
+let upstreamWrites = 0;
 const documentUpdates = [];
 const mf = new Miniflare(convertV4MiniflareOptions({
   modules: true, script: bundle.outputFiles[0].text,
@@ -49,6 +50,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
     headers.delete("host");
     headers.set("X-Frappe-Site-Name", "mcp.localhost");
     upstreamCalls++;
+    if (!["GET", "HEAD"].includes(request.method)) upstreamWrites++;
     if (request.method === "PUT" && url.pathname.startsWith("/api/resource/")) documentUpdates.push(url.pathname);
     return fetch(new URL(url.pathname + url.search, backend), { method: request.method, headers,
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
@@ -533,6 +535,36 @@ try {
   const sourceLeadQuote = await call("all", "get_document", { doctype: "Quotation", name: fixture.lead_quotation });
   assert.equal(sourceLeadQuote.quotation_to, "Lead");
   assert.equal(sourceLeadQuote.party_name, fixture.conversion_lead);
+  const rawLeadQuote = await backendRequest("all", `/api/resource/Quotation/${encodeURIComponent(sourceLeadQuote.name)}`);
+  assert.equal(Object.hasOwn(rawLeadQuote, "valid_till"), false, "REST omits a readable NULL expiry");
+  const expiryQuery = new URLSearchParams({ fields: JSON.stringify(["name", "modified", "valid_till"]),
+    filters: JSON.stringify([["name", "=", sourceLeadQuote.name]]), limit_page_length: "1" });
+  const readableExpiry = await backendRequest("all", `/api/resource/Quotation?${expiryQuery}`);
+  assert.deepEqual(readableExpiry, [{ name: sourceLeadQuote.name, modified: rawLeadQuote.modified, valid_till: null }]);
+  const hiddenExpiryQuote = await backendRequest("expiry_hidden", `/api/resource/Quotation/${encodeURIComponent(sourceLeadQuote.name)}`);
+  assert.equal(hiddenExpiryQuote.name, sourceLeadQuote.name);
+  assert.equal(Object.hasOwn(hiddenExpiryQuote, "valid_till"), false, "REST also omits an unreadable expiry");
+  const hiddenExpiry = await backendRequest("expiry_hidden", `/api/resource/Quotation?${expiryQuery}`);
+  assert.deepEqual(hiddenExpiry, [{ name: sourceLeadQuote.name, modified: rawLeadQuote.modified }],
+    "The list API must remove the unreadable field rather than return NULL");
+  const hiddenCustomer = await backendRequest("expiry_hidden", `/api/resource/Customer/${encodeURIComponent(convertedCustomer.name)}`);
+  assert.equal(hiddenCustomer.lead_name, fixture.conversion_lead);
+  const orderQuery = new URLSearchParams({ fields: JSON.stringify(["name"]),
+    filters: JSON.stringify([["customer", "=", convertedCustomer.name]]), limit_page_length: "100" });
+  assert.deepEqual(await backendRequest("all", `/api/resource/Sales%20Order?${orderQuery}`), []);
+  const beforeHiddenExpiryWrites = upstreamWrites;
+  const hiddenExpiryResult = await rpc("expiry_hidden", "tools/call", { name: "create_draft_sales_order",
+    arguments: { ...salesOrderArgs,
+      request_key: "live-lead-sales-order-hidden-expiry", customer: convertedCustomer.name,
+      items: [{ item_code: fixture.quote_items[1], qty: 3, prevdoc_docname: sourceLeadQuote.name,
+        quotation_item: sourceLeadQuote.items[1].name }] } });
+  assert.equal(hiddenExpiryResult.isError, true);
+  const hiddenExpiryError = JSON.parse(hiddenExpiryResult.content[0].text).error;
+  assert.equal(hiddenExpiryError.code, "UPSTREAM_INVALID_RESPONSE");
+  assert.match(hiddenExpiryError.message, /expiry date/i);
+  checks++;
+  assert.equal(upstreamWrites, beforeHiddenExpiryWrites, "An unreadable expiry must fail before any upstream write");
+  assert.deepEqual(await backendRequest("all", `/api/resource/Sales%20Order?${orderQuery}`), []);
   const leadOrder = await call("all", "create_draft_sales_order", { ...salesOrderArgs,
     request_key: "live-lead-sales-order-create", customer: convertedCustomer.name,
     payment_terms_template: fixture.payment_terms,
