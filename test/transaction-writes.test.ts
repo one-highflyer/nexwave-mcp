@@ -578,17 +578,19 @@ describe("Lead quotation to linked Customer Sales Order", () => {
   function leadUpstream() {
     const up = upstream(mode);
     const src = up.state.sources.get(mode.sourceId)!;
-    Object.assign(src, { quotation_to: "Lead", party_name: "LEAD-1", transaction_date: "2025-01-10", valid_till: "2099-12-31",
+    Object.assign(src, { modified, quotation_to: "Lead", party_name: "LEAD-1", transaction_date: "2025-01-10", valid_till: "2099-12-31",
       taxes: [{ charge_type: "On Net Total", account_head: "GST", rate: 15 }],
       apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 10, conversion_rate: 1, plc_conversion_rate: 1 });
     src.items.forEach((row: Row) => Object.assign(row, { stock_qty: row.qty * 2, ordered_qty: 4, conversion_factor: 2,
       is_alternative: 0, has_alternative_item: 0, against_blanket_order: 0 }));
+    const expiryLookup = { rows: [{ name: src.name, modified, valid_till: null }] as Row[] };
     up.state.before = (url) => {
       if (decodeURIComponent(url.pathname) === "/api/resource/Customer/CUST-1") return Response.json({ data: { name: "CUST-1", lead_name: "LEAD-1" } });
+      if (url.pathname === "/api/resource/Quotation") return Response.json({ data: expiryLookup.rows });
       if (url.pathname === "/api/method/frappe.client.get_time_zone") return Response.json({ message: { time_zone: "UTC" } });
     };
     const mapperCalls = () => up.maps().filter(([url]) => url.includes("make_sales_order"));
-    return { ...up, src, mapperCalls };
+    return { ...up, src, mapperCalls, expiryLookup };
   }
 
   it("creates and updates linked rows without calling the native Lead mapper or creating a Customer", async () => {
@@ -624,10 +626,72 @@ describe("Lead quotation to linked Customer Sales Order", () => {
     expect(up.saves()).toHaveLength(0);
   });
 
-  it.each(["currency", "conversion_rate", "plc_conversion_rate", "additional_discount_percentage", "discount_amount", "valid_till"])("refuses a hidden source %s field", async (field) => {
+  it.each(["currency", "conversion_rate", "plc_conversion_rate", "additional_discount_percentage", "discount_amount"])("refuses a hidden source %s field", async (field) => {
     const up = leadUpstream(); up.src.discount_amount = 0; delete up.src[field];
     await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
     expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it.each([null, "2099-12-31"])("creates and updates with a confirmed omitted expiry %s without losing source links", async (valid_till) => {
+    const up = leadUpstream(); delete up.src.valid_till; const ctx = environment();
+    up.expiryLookup.rows[0].valid_till = valid_till;
+    await executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }));
+    await executeTransactionWrite(ctx.env, props, mode.update, update(mode, { items: [{ name: "NEW-ROW-1", ...item, qty: 3 }] }));
+    expect(up.savedBody().items[0]).toMatchObject({ name: "NEW-ROW-1", qty: 3, prevdoc_docname: "QTN-1", quotation_item: "SOURCE-ROW-1" });
+    const lookups = up.mock.mock.calls.filter(([url]) => new URL(url).pathname === "/api/resource/Quotation");
+    expect(lookups).toHaveLength(2);
+    for (const [url, init] of lookups) {
+      const query = new URL(url).searchParams;
+      expect(query.get("fields")).toBe(JSON.stringify(["name", "modified", "valid_till"]));
+      expect(JSON.parse(query.get("filters")!)).toEqual([["Quotation", "name", "=", "QTN-1"]]);
+      expect(query.get("limit_page_length")).toBe("1");
+      expect(init?.headers).toMatchObject({ Authorization: "token test-key:test-secret" });
+    }
+    expect(up.mapperCalls()).toHaveLength(0);
+    expect(up.saves()).toHaveLength(2);
+  });
+
+  it.each([null, "", "2099-12-31"])("uses an explicit expiry %s without another lookup", async (valid_till) => {
+    const up = leadUpstream(); up.src.valid_till = valid_till;
+    await executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }));
+    expect(up.mock.mock.calls.some(([url]) => new URL(url).pathname === "/api/resource/Quotation")).toBe(false);
+    expect(up.saves()).toHaveLength(1);
+  });
+
+  it.each([
+    [], [{ name: "OTHER", modified, valid_till: null }], [{ name: "QTN-1", modified }],
+    [{ name: "QTN-1", valid_till: null }], [{ name: "QTN-1", modified: "", valid_till: null }],
+    [{ name: "QTN-1", modified, valid_till: 0 }], [{ name: "QTN-1", modified, valid_till: {} }],
+    [{ name: "QTN-1", modified, valid_till: null }, { name: "QTN-1", modified, valid_till: null }],
+  ].map((rows) => ({ rows })))("rejects unreadable or invalid expiry lookup rows %j before reserving a write", async ({ rows }) => {
+    const up = leadUpstream(); delete up.src.valid_till; up.expiryLookup.rows = rows; const ctx = environment();
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("expiry date could not be confirmed");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("rejects a changed source snapshot before reserving a write", async () => {
+    const up = leadUpstream(); delete up.src.valid_till; up.expiryLookup.rows[0].modified = "2025-01-11 12:00:00.000000"; const ctx = environment();
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("CONFLICT");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it.each([undefined, ""])("rejects an unconfirmed source modification timestamp %s", async (value) => {
+    const up = leadUpstream(); delete up.src.valid_till; up.src.modified = value; const ctx = environment();
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("expiry date could not be confirmed");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("keeps denied expiry reads as a permission failure", async () => {
+    const up = leadUpstream(); delete up.src.valid_till; const before = up.state.before!; const ctx = environment();
+    up.state.before = (url, init) => url.pathname === "/api/resource/Quotation" ? new Response("private field detail", { status: 403 }) : before(url, init);
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("PERMISSION_DENIED");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it.each(["2020-01-01", "2026-02-30", "bad-date"])("validates a fetched expiry date %s", async (valid_till) => {
+    const up = leadUpstream(); delete up.src.valid_till; up.expiryLookup.rows[0].valid_till = valid_till; const ctx = environment();
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("Expired or invalid Lead quotations");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
   });
 
   it.each([{ is_alternative: 1 }, { has_alternative_item: 1 }, { against_blanket_order: 1 }])("refuses unsupported source line settings %j", async (patch) => {

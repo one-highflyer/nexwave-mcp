@@ -206,6 +206,12 @@ def run():
         "items": [{"item_code": quote_items[1], "qty": 6, "uom": "Nos", "rate": 40},
             {"item_code": quote_items[1], "qty": 9, "uom": "Nos", "rate": 45}]}).insert()
     lead_quotation.submit()
+    # Native insert defaults can fill this field. Persist NULL on this disposable
+    # source after submit so REST really exercises no_nulls serialization.
+    assert lead_quotation.quotation_to == "Lead" and lead_quotation.party_name == conversion_lead.name
+    frappe.db.set_value("Quotation", lead_quotation.name, "valid_till", None)
+    lead_quotation.reload()
+    assert lead_quotation.valid_till is None
     source_purchase_order = frappe.get_doc({"doctype": "Purchase Order", "company": alpha.name,
         "supplier": "MCP Supplier", "transaction_date": "2025-01-10", "schedule_date": "2025-01-20",
         "currency": "NZD", "buying_price_list": "MCP NZD", "ignore_pricing_rule": 1,
@@ -236,6 +242,17 @@ def run():
         add_permission(doctype, draft_editor.name)
         update_permission_property(doctype, draft_editor.name, 0, "write", 1)
         update_permission_property(doctype, draft_editor.name, 0, "create", 1)
+    # Fixture-only field permissions distinguish a readable NULL from a hidden expiry.
+    # add_permission above has copied the native permissions to Custom DocPerm.
+    from frappe.custom.doctype.property_setter.property_setter import make_property_setter
+    for permission in frappe.get_all("Custom DocPerm",
+            filters={"parent": "Quotation", "permlevel": 1}, pluck="name"):
+        frappe.delete_doc("Custom DocPerm", permission)
+    expiry_reader = frappe.get_doc({"doctype": "Role", "role_name": "MCP Expiry Access", "desk_access": 1}).insert()
+    add_permission("Quotation", expiry_reader.name)
+    add_permission("Quotation", expiry_reader.name, permlevel=1)
+    update_permission_property("Quotation", expiry_reader.name, 1, "write", 1)
+    make_property_setter("Quotation", "valid_till", "permlevel", 1, "Int")
     credentials = {}
     # Item-wise Sales Register also needs UOM read access (Stock User).
     # Master roles grant Item Price reads and party creation. Gateway capabilities are tested
@@ -244,7 +261,9 @@ def run():
         "Sales Master Manager", "Purchase User", "Purchase Master Manager"]
     for role_name, roles in (("all", reader_roles), ("restricted", reader_roles), ("readonly", reader_roles),
             ("denied", []), ("nosubmit", [draft_editor.name]), ("crm_restricted", reader_roles),
-            ("workflow_admin", ["System Manager"])):
+            ("expiry_hidden", reader_roles), ("workflow_admin", ["System Manager"])):
+        if role_name not in ("denied", "expiry_hidden", "workflow_admin"):
+            roles = [*roles, expiry_reader.name]
         user = frappe.get_doc({"doctype": "User", "email": f"mcp-{role_name}@example.invalid",
             "first_name": f"MCP {role_name}", "enabled": 1, "user_type": "System User", "send_welcome_email": 0,
             "roles": [{"role": role} for role in roles], "api_key": secrets.token_hex(16), "api_secret": secrets.token_hex(16)}).insert()
@@ -259,6 +278,12 @@ def run():
     frappe.clear_cache()
     assert frappe.has_permission("Quotation", "write", user=credentials["nosubmit"]["user"])
     assert not frappe.has_permission("Quotation", "submit", user=credentials["nosubmit"]["user"])
+    hidden_user = credentials["expiry_hidden"]["user"]
+    assert frappe.has_permission("Quotation", "read", doc=lead_quotation, user=hidden_user)
+    assert frappe.has_permission("Sales Order", "create", user=hidden_user)
+    assert frappe.has_permission("Sales Order", "write", user=hidden_user)
+    assert 1 not in frappe.get_meta("Quotation").get_permlevel_access("read", user=hidden_user)
+    assert 1 in frappe.get_meta("Quotation").get_permlevel_access("read", user=credentials["all"]["user"])
     workflow_admin = credentials.pop("workflow_admin")
     manifest = {"credentials": credentials, "sales": sales.name, "usd": usd.name, "future": future.name,
         "credit": credit.name, "draft": draft.name, "hidden": hidden.name, "purchase": purchase.name,
