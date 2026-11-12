@@ -261,6 +261,8 @@ const ADMIN_HTML = `<!doctype html>
           <label><input type="checkbox" id="write-quotations"> Create and update draft quotations</label>
           <label><input type="checkbox" id="write-leads"> Create leads</label>
           <label><input type="checkbox" id="write-customers"> Create customers</label>
+          <label><input type="checkbox" id="write-sales_orders"> Create and update draft sales orders</label>
+          <label><input type="checkbox" id="write-purchase_invoices"> Create and update draft purchase invoices</label>
         </fieldset>
         <button type="submit">Save connection</button>
         <div class="status" id="status" role="status"></div>
@@ -310,11 +312,11 @@ const ADMIN_HTML = `<!doctype html>
         : 'OAuth 2';
       text.append(title, url, authentication);
       const access = document.createElement('div');
-      const checks = ['quotations', 'leads', 'customers'].map((capability) => {
+      const checks = ['quotations', 'leads', 'customers', 'sales_orders', 'purchase_invoices'].map((capability) => {
         const label = document.createElement('label');
         const check = document.createElement('input'); check.type = 'checkbox';
         check.checked = (site.writeCapabilities || []).includes(capability);
-        label.append(check, document.createTextNode(' ' + capability)); access.append(label);
+        label.append(check, document.createTextNode(' ' + capability.replaceAll('_', ' '))); access.append(label);
         return { capability, check };
       });
       const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Save access';
@@ -357,7 +359,7 @@ const ADMIN_HTML = `<!doctype html>
       clientSecret: $('client-secret').value,
       apiKey: $('api-key').value,
       apiSecret: $('api-secret').value,
-      writeCapabilities: ['quotations', 'leads', 'customers'].filter((capability) => $('write-' + capability).checked),
+      writeCapabilities: ['quotations', 'leads', 'customers', 'sales_orders', 'purchase_invoices'].filter((capability) => $('write-' + capability).checked),
     };
     try {
       const response = await fetch('/api/admin/sites', { method: 'POST', headers: headers(), body: JSON.stringify(body) });

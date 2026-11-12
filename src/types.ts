@@ -10,7 +10,7 @@ export interface Env {
 }
 
 export type SiteAuthType = "oauth" | "api_token";
-export const WRITE_CAPABILITIES = ["quotations", "leads", "customers"] as const;
+export const WRITE_CAPABILITIES = ["quotations", "leads", "customers", "sales_orders", "purchase_invoices"] as const;
 export type WriteCapability = typeof WRITE_CAPABILITIES[number];
 
 export interface SiteRecord {

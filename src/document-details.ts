@@ -11,8 +11,8 @@ const TABLES: Record<string, Record<string, string[]>> = {
   "Sales Taxes and Charges Template": { taxes: ["charge_type", "row_id", "account_head", "description", "included_in_print_rate", "rate", "tax_amount", "cost_center"] },
   "Purchase Taxes and Charges Template": { taxes: ["charge_type", "row_id", "account_head", "description", "included_in_print_rate", "rate", "tax_amount", "cost_center", "category", "add_deduct_tax"] },
   "Payment Terms Template": { terms: ["payment_term", "description", "invoice_portion", "due_date_based_on", "credit_days", "credit_months", "discount_type", "discount", "discount_validity_based_on", "discount_validity"] },
-  "Sales Order": { items: ITEM_FIELDS }, "Purchase Order": { items: ITEM_FIELDS },
-  "Sales Invoice": { items: ITEM_FIELDS }, "Purchase Invoice": { items: ITEM_FIELDS },
+  "Sales Order": { items: ITEM_FIELDS.concat(["prevdoc_docname", "quotation_item"]) }, "Purchase Order": { items: ITEM_FIELDS },
+  "Sales Invoice": { items: ITEM_FIELDS }, "Purchase Invoice": { items: ITEM_FIELDS.concat(["po_detail", "pr_detail"]) },
   "Payment Entry": { references: REFERENCE_FIELDS },
   "Bank Transaction": { payment_entries: ["name", "idx", "payment_document", "payment_entry", "allocated_amount"] },
   "Work Order": {

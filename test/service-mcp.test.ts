@@ -113,6 +113,12 @@ describe("service MCP authentication", () => {
     });
   });
 
+  it("grants only the selected sales order and purchase invoice service capabilities", async () => {
+    const site = { ...await apiTokenSite(), write_capabilities: '["sales_orders","purchase_invoices"]' };
+    const result = await authenticateServiceMcpRequest(serviceRequest("gateway-token"), serviceEnv(site));
+    expect("props" in result && result.props.writeCapabilities).toEqual(["sales_orders", "purchase_invoices"]);
+  });
+
   it("rejects a missing or invalid gateway token", async () => {
     const site = await apiTokenSite();
     const missing = await authenticateServiceMcpRequest(serviceRequest(), serviceEnv(site));
@@ -629,6 +635,19 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
   });
 
+  it.each([
+    ["Sales Order", { selling_price_list: "Retail", taxes_and_charges: "Sales Tax", payment_terms_template: "Net 30", tc_name: "Sales Terms" }, { prevdoc_docname: "QUOTE-1", quotation_item: "QUOTE-LINE-1" }],
+    ["Purchase Invoice", { bill_no: "BILL-1", bill_date: "2025-01-01", buying_price_list: "Buying", credit_to: "Creditors", update_stock: 0, taxes_and_charges: "Purchase Tax", payment_terms_template: "Net 30", tc_name: "Purchase Terms" }, { purchase_order: "PO-1", po_detail: "PO-LINE-1", purchase_receipt: "RECEIPT-1", pr_detail: "RECEIPT-LINE-1" }],
+  ] as const)("returns draft edit fields and exact source line links in get_document for %s", async (doctype, fields, references) => {
+    const row = { name: "LINE-1", item_code: "ITEM-1", qty: 2, ...references };
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: { name: "DOC-1", modified: "2025-01-01 10:00:00", docstatus: 0, ...fields, private_custom_field: "hidden", items: [row] } })));
+    const result = await invokeTool("get_document", { doctype, name: "DOC-1" });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ name: "DOC-1", modified: "2025-01-01 10:00:00", docstatus: 0, ...fields, items: [row] });
+    expect(result.structuredContent).not.toHaveProperty("private_custom_field");
+    expect(JSON.parse(result.content[0].text)).toEqual(result.structuredContent);
+  });
+
   it("keeps invoice totals in document currency when a party currency filter is also supplied", async () => {
     const fetchMock = vi.fn(async (_input: string) => Response.json({ data: [{ record_count: 2, total_grand_total: 200 }] }));
     vi.stubGlobal("fetch", fetchMock);
@@ -652,19 +671,29 @@ describe("service MCP authentication", () => {
     expect(JSON.parse(result.content[1].text).ranking).toEqual(result.structuredContent?.ranking);
   });
 
-  it("advertises output contracts and correct read/write annotations for all 46 tools", async () => {
+  it.each([
+    ["Quotation", { order_type: "Maintenance" }],
+    ["Purchase Order", { docstatus: 1, modified: "2025-01-10 12:00:00.000000" }],
+  ])("returns source conversion fields from get_document for %s", async (doctype, fields) => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: { name: "SOURCE-1", ...fields, items: [] } })));
+    const result = await invokeTool("get_document", { doctype, name: "SOURCE-1" });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject(fields);
+  });
+
+  it("advertises output contracts and correct read/write annotations for all 50 tools", async () => {
     const request = new Request(serviceToolRequest("gateway-token", "ignored", {}), { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
     const response = await handleServiceMcpRequest(request, serviceEnv(await apiTokenSite()), executionContext());
     const body = await response.text();
     const data = body.split("\n").find((line) => line.startsWith("data: "));
     const tools = JSON.parse(data?.slice(6) ?? body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> }; outputSchema: { type?: string }; annotations: { readOnlyHint: boolean; destructiveHint: boolean } }>;
-    expect(tools).toHaveLength(46);
+    expect(tools).toHaveLength(50);
     expect(tools.some((tool) => tool.name === "preview_quotation")).toBe(false);
-    const writes = new Set(["create_draft_quotation", "update_draft_quotation", "create_customer", "create_lead"]);
+    const writes = new Set(["create_draft_quotation", "update_draft_quotation", "create_customer", "create_lead", "create_draft_sales_order", "update_draft_sales_order", "create_draft_purchase_invoice", "update_draft_purchase_invoice"]);
     const transactions = new Set(["list_sales_invoices", "list_purchase_invoices", "list_sales_orders", "list_purchase_orders", "list_payments", "list_bank_transactions"]);
     for (const tool of tools) {
       expect(tool.outputSchema.type, tool.name).toBe("object");
-      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: !writes.has(tool.name), destructiveHint: tool.name === "update_draft_quotation" });
+      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: !writes.has(tool.name), destructiveHint: tool.name.startsWith("update_") });
       if (tool.name.startsWith("list_") && !["list_item_prices", "list_print_formats"].includes(tool.name)) expect(tool.inputSchema.properties.summary.enum, tool.name).toEqual(transactions.has(tool.name) ? ["count", "totals"] : ["count"]);
     }
   });

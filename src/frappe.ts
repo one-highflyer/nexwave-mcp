@@ -139,7 +139,7 @@ export async function frappeAddressDisplay(props: NexWaveAuthProps, name: string
 /** Mutations are sent once. Their caller owns durable replay protection and uncertain outcomes. */
 export async function frappeWrite(
   props: NexWaveAuthProps,
-  doctype: "Quotation" | "Customer" | "Lead",
+  doctype: "Quotation" | "Customer" | "Lead" | "Sales Order" | "Purchase Invoice",
   document: Record<string, unknown>,
   name?: string,
 ): Promise<Record<string, unknown>> {
@@ -154,6 +154,27 @@ export async function frappeWrite(
     throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The write result could not be confirmed. Check the document before trying another request.");
   }
   return response.data;
+}
+
+/** Fixed native conversions only. A caller must verify source access and reserve the write first. */
+export async function frappeMapDraft(
+  props: NexWaveAuthProps,
+  doctype: "Sales Order" | "Purchase Invoice",
+  sourceName: string,
+  sourceRows: string[],
+): Promise<Record<string, unknown>> {
+  const method = doctype === "Sales Order"
+    ? "erpnext.selling.doctype.quotation.quotation.make_sales_order"
+    : "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_invoice";
+  const url = new URL(`/api/method/${method}`, props.baseUrl);
+  const response = await frappeFetchAttempt<FrappeEnvelope<Record<string, unknown>>>(url.toString(), upstreamAuthorization(props), {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source_name: sourceName, args: { filtered_children: sourceRows } }),
+  }, remainingTime(props), crypto.randomUUID(), 1);
+  if (!isRecord(response.message) || response.message.doctype !== doctype || !Array.isArray(response.message.items)) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave did not return the expected converted draft.");
+  }
+  return response.message;
 }
 
 export async function frappeRunReport(
