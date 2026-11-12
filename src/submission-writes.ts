@@ -18,7 +18,7 @@ const INPUT = z.strictObject({
 const CAPABILITIES: Record<SubmittableDoctype, WriteCapability> = {
   Quotation: "quotations", "Sales Order": "sales_orders", "Purchase Invoice": "purchase_invoices",
 };
-const FIELDS = ["name", "modified", "docstatus", "status", "company", "quotation_to", "party_name", "customer", "customer_name", "supplier", "supplier_name", "transaction_date", "posting_date", "delivery_date", "due_date", "currency", "order_type", "total", "net_total", "total_taxes_and_charges", "grand_total", "rounded_total", "apply_discount_on", "additional_discount_percentage", "discount_amount", "taxes_and_charges", "payment_terms_template", "tc_name", "is_return", "update_stock", "is_paid", "paid_amount"];
+const FIELDS = ["name", "modified", "docstatus", "status", "company", "quotation_to", "party_name", "customer", "customer_name", "supplier", "supplier_name", "transaction_date", "posting_date", "delivery_date", "due_date", "currency", "order_type", "total", "net_total", "total_taxes_and_charges", "grand_total", "rounded_total", "apply_discount_on", "additional_discount_percentage", "discount_amount", "taxes_and_charges", "tax_category", "disable_rounded_total", "payment_terms_template", "tc_name", "is_return", "update_stock", "is_paid", "paid_amount"];
 
 export function registerSubmissionWrite(server: McpServer, currentProps: () => Promise<NexWaveAuthProps>, env?: Env) {
   registerWriteTool(server, "submit_document", {

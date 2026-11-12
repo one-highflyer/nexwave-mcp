@@ -15,7 +15,7 @@ const modes = [
 type Mode = typeof modes[number];
 const modified = "2025-01-10 12:00:00.000000";
 const item = { item_code: "ITEM-1", qty: 2, uom: "Each" };
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 function environment(capabilities = '["sales_orders","purchase_invoices"]', failures: { complete?: boolean; unknown?: boolean } = {}) {
   const reservations = new Map<string, { fingerprint: string; state: string; document_name?: string }>();
@@ -229,6 +229,22 @@ describe.each(modes)("$target draft writes", (mode) => {
     expect(up.savedBody()).toMatchObject({ apply_discount_on: "Net Total", additional_discount_percentage: 10, items: [{ qty: 2 }] });
     expect(up.savedBody().discount_amount ?? 0).toBe(0);
     expect(result.structuredContent).toMatchObject({ document: { apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 2.4 } });
+  });
+
+  it("preserves source tax category and rounding defaults", async () => {
+    const up = upstream(mode); const context = { tax_category: "Standard", disable_rounded_total: 1 };
+    Object.assign(up.state.sources.get(mode.sourceId)!, context);
+    up.state.mapped = (doc) => ({ ...doc, ...context });
+    const result = await executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }));
+    expect(up.savedBody()).toMatchObject(context);
+    expect(result.structuredContent.document).toMatchObject(context);
+  });
+
+  it.each([{ tax_category: "Different" }, { disable_rounded_total: 1 }])("rejects conflicting source tax and rounding settings %j", async (context) => {
+    const up = upstream(mode); const other = `${mode.sourceId}-OTHER`;
+    up.state.sources.set(other, { ...source(mode, other as typeof mode.sourceId), ...context });
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode), linked(mode, { [mode.parent]: other })] }))).rejects.toThrow("same tax category and rounding");
+    expect(up.saves()).toHaveLength(0); expect(up.maps()).toHaveLength(0);
   });
 
   it("combines multiple sources with the same percentage discount and basis", async () => {
@@ -528,7 +544,7 @@ describe("transaction-specific controls", () => {
     expect(up.maps()).toHaveLength(0); expect(up.saves()).toHaveLength(0);
   });
 
-  it("rejects Lead quotations before the native mapper can create a Customer", async () => {
+  it("rejects a Lead quotation without an exact Customer link before conversion", async () => {
     const mode = modes[0]; const up = upstream(mode);
     Object.assign(up.state.sources.get(mode.sourceId)!, { quotation_to: "Lead", party_name: "LEAD-1" });
     await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("Customer");
@@ -554,5 +570,108 @@ describe("transaction-specific controls", () => {
     const mode = modes[1]; const up = upstream(mode); Object.assign(up.state.current, patch);
     await expect(executeTransactionWrite(environment().env, props, mode.update, update(mode, { bill_no: "BILL-1" }))).rejects.toThrow("ordinary unpaid");
     expect(up.saves()).toHaveLength(0);
+  });
+});
+
+describe("Lead quotation to linked Customer Sales Order", () => {
+  const mode = modes[0];
+  function leadUpstream() {
+    const up = upstream(mode);
+    const src = up.state.sources.get(mode.sourceId)!;
+    Object.assign(src, { quotation_to: "Lead", party_name: "LEAD-1", transaction_date: "2025-01-10", valid_till: "2099-12-31",
+      taxes: [{ charge_type: "On Net Total", account_head: "GST", rate: 15 }],
+      apply_discount_on: "Net Total", additional_discount_percentage: 10, discount_amount: 10, conversion_rate: 1, plc_conversion_rate: 1 });
+    src.items.forEach((row: Row) => Object.assign(row, { stock_qty: row.qty * 2, ordered_qty: 4, conversion_factor: 2,
+      is_alternative: 0, has_alternative_item: 0, against_blanket_order: 0 }));
+    up.state.before = (url) => {
+      if (decodeURIComponent(url.pathname) === "/api/resource/Customer/CUST-1") return Response.json({ data: { name: "CUST-1", lead_name: "LEAD-1" } });
+      if (url.pathname === "/api/method/frappe.client.get_time_zone") return Response.json({ message: { time_zone: "UTC" } });
+    };
+    const mapperCalls = () => up.maps().filter(([url]) => url.includes("make_sales_order"));
+    return { ...up, src, mapperCalls };
+  }
+
+  it("creates and updates linked rows without calling the native Lead mapper or creating a Customer", async () => {
+    const up = leadUpstream(); const ctx = environment();
+    const result = await executeTransactionWrite(ctx.env, props, mode.create, create(mode, { items: [linked(mode, { qty: 3 })] }));
+    expect(up.mapperCalls()).toHaveLength(0);
+    expect(up.saves()).toHaveLength(1);
+    expect(up.savedBody()).toMatchObject({ customer: "CUST-1", additional_discount_percentage: 10, apply_discount_on: "Net Total",
+      taxes: [{ account_head: "GST", rate: 15 }], items: [{ qty: 3, rate: 12, conversion_factor: 2, prevdoc_docname: "QTN-1", quotation_item: "SOURCE-ROW-1" }] });
+    expect(result.structuredContent.document).toMatchObject({ items: [{ quotation_item: "SOURCE-ROW-1" }], taxes: [{ rate: 15 }] });
+    await executeTransactionWrite(ctx.env, props, mode.update, update(mode, { items: [{ name: "NEW-ROW-1", ...item, qty: 4 }] }));
+    expect(up.savedBody().items[0]).toMatchObject({ name: "NEW-ROW-1", qty: 4, prevdoc_docname: "QTN-1", quotation_item: "SOURCE-ROW-1" });
+    expect(up.mapperCalls()).toHaveLength(0);
+    expect(up.saves().every(([url]) => url.includes("/Sales%20Order"))).toBe(true);
+  });
+
+  it("enforces available stock units and the total quantity of split references", async () => {
+    const up = leadUpstream();
+    up.src.items[0].stock_qty = 10; // (10 - 4) / 2 = 3 remaining units
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode, { qty: 2 }), linked(mode, { qty: 2 })] }))).rejects.toThrow("available source quantity");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it.each([undefined, null, -1, "10", Number.NaN])("refuses unreadable or invalid ordered quantities: %s", async (value) => {
+    const up = leadUpstream(); up.src.items[0].ordered_qty = value;
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it.each(["stock_qty", "conversion_factor", "rate", "is_alternative", "has_alternative_item", "against_blanket_order"]) ("refuses a hidden %s field", async (field) => {
+    const up = leadUpstream(); delete up.src.items[0][field];
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+    expect(up.saves()).toHaveLength(0);
+  });
+
+  it.each(["currency", "conversion_rate", "plc_conversion_rate", "additional_discount_percentage", "discount_amount", "valid_till"])("refuses a hidden source %s field", async (field) => {
+    const up = leadUpstream(); up.src.discount_amount = 0; delete up.src[field];
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it.each([{ is_alternative: 1 }, { has_alternative_item: 1 }, { against_blanket_order: 1 }])("refuses unsupported source line settings %j", async (patch) => {
+    const up = leadUpstream(); Object.assign(up.src.items[0], patch);
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("normal NexWave conversion");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it("preserves saved line margins instead of changing the offered price", async () => {
+    const up = leadUpstream();
+    Object.assign(up.src.items[0], { price_list_rate: 10, margin_type: "Amount", margin_rate_or_amount: 2, rate_with_margin: 12, base_rate_with_margin: 12 });
+    const result = await executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }));
+    expect(up.savedBody().items[0]).toMatchObject({ rate: 12, price_list_rate: 10, margin_type: "Amount", margin_rate_or_amount: 2, rate_with_margin: 12 });
+    expect(result.structuredContent.document).toMatchObject({ items: [{ margin_type: "Amount", margin_rate_or_amount: 2 }] });
+    expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it.each([{ has_unit_price_items: 1 }, { referral_sales_partner: "PARTNER-1" }, { sales_team: [{ sales_person: "PERSON-1" }] }])("refuses unsupported source header settings %j", async (patch) => {
+    const up = leadUpstream(); Object.assign(up.src, patch);
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("normal NexWave conversion");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it("requires the Customer link again when updating an existing linked order", async () => {
+    const up = leadUpstream(); up.state.current.items = [{ name: "TARGET-ROW-1", ...linked(mode) }];
+    const handler = up.state.before!;
+    up.state.before = (url, init) => decodeURIComponent(url.pathname).includes("/Customer/") ? Response.json({ data: { name: "CUST-1", lead_name: "OTHER-LEAD" } }) : handler(url, init);
+    await expect(executeTransactionWrite(environment().env, props, mode.update, update(mode, { delivery_date: "2025-02-01" }))).rejects.toThrow("exact lead_name");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it("stops on denied Customer access", async () => {
+    const up = leadUpstream();
+    up.state.before = (url) => decodeURIComponent(url.pathname).includes("/Customer/") ? new Response(null, { status: 403 }) : undefined;
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("PERMISSION_DENIED");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
+  });
+
+  it("rejects expiry using the site date rather than UTC", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T11:30:00Z"));
+    const up = leadUpstream(); up.src.valid_till = "2026-01-01";
+    const handler = up.state.before!;
+    up.state.before = (url, init) => url.pathname.endsWith("get_time_zone") ? Response.json({ message: { time_zone: "Pacific/Auckland" } }) : handler(url, init);
+    await expect(executeTransactionWrite(environment().env, props, mode.create, create(mode, { items: [linked(mode)] }))).rejects.toThrow("Expired");
+    expect(up.saves()).toHaveLength(0); expect(up.mapperCalls()).toHaveLength(0);
   });
 });

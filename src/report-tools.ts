@@ -1,7 +1,7 @@
 import { registerReadTool } from "./tool-contract";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import { frappeFiscalYear, frappeRunReport, type FrappeReportResult } from "./frappe";
+import { frappeFiscalYear, frappeGet, frappeRunReport, type FrappeReportResult } from "./frappe";
 import { PERIOD_SCHEMA, resolveReportPeriod } from "./report-period";
 import { structuredResult, ToolError } from "./tool-result";
 import type { NexWaveAuthProps } from "./types";
@@ -224,9 +224,23 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
       },
     },
     async ({ company, from_date: from, to_date: to, period, as_of_date, accounts, party_type, parties, voucher_no, cost_centres, projects, finance_book, group_by, limit, offset }) => {
+      if (voucher_no && group_by === "voucher") {
+        throw new ToolError("INVALID_ARGUMENT", "voucher_no cannot be used with group_by voucher. Use voucher_consolidated, account, or party grouping, or omit voucher_no. No report was run.");
+      }
       const props = await getProps();
       const { from_date, to_date } = await resolveReportPeriod(props, company, { from_date: from, to_date: to, period, as_of_date });
       validateDateRange(from_date, to_date, 366);
+      if (group_by === "account") {
+        for (const account of accounts ?? []) {
+          const document = await frappeGet<{ is_group: number }>(props, "Account", account);
+          if (document.is_group === 0) {
+            throw new ToolError("INVALID_ARGUMENT", "group_by account only accepts group Accounts in accounts. Omit accounts, select group Accounts, or use voucher_consolidated for a ledger Account. No report was run.");
+          }
+          if (document.is_group !== 1) {
+            throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave did not return the Account group status. No report was run.");
+          }
+        }
+      }
       const groupBy = {
         voucher: "Categorize by Voucher",
         voucher_consolidated: "Categorize by Voucher (Consolidated)",
@@ -399,8 +413,13 @@ export function registerReportTools(server: McpServer, getProps: PropsProvider):
     },
     async ({ company, account, report_date, include_pos_transactions, limit, offset }) => {
       validateDateRange(report_date, report_date);
+      const props = await getProps();
+      const document = await frappeGet<{ company: string; account_type: string; disabled: number; is_group: number }>(props, "Account", account);
+      if (document.company !== company || !["Bank", "Cash"].includes(document.account_type) || document.disabled !== 0 || document.is_group !== 0) {
+        throw new ToolError("INVALID_ARGUMENT", "Bank Reconciliation Statement requires an enabled Bank or Cash ledger Account in the selected company. Use list_accounts to select an Account with is_group 0 and disabled 0. No report was run.");
+      }
       return runReport(
-        getProps,
+        async () => props,
         "Bank Reconciliation Statement",
         {
           company,

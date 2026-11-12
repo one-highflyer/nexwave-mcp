@@ -438,7 +438,7 @@ describe("service MCP authentication", () => {
   });
 
   it("returns structured metadata while preserving legacy list text", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [{ name: "SUP-001", supplier_name: "Example Supplier" }] })));
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(async () => Response.json({ data: [{ name: "SUP-001", supplier_name: "Example Supplier" }] })));
     const result = await invokeTool("list_suppliers", { search: "Example Supplier" });
     expect(JSON.parse(result.content[0].text)).toEqual([{ name: "SUP-001", supplier_name: "Example Supplier" }]);
     expect(result.structuredContent).toMatchObject({ meta: { match_status: "matched", count: 1 } });

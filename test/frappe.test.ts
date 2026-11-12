@@ -5,6 +5,7 @@ import {
   frappeGet,
   frappeList,
   frappeRunReport,
+  frappeSiteDate,
   getApiTokenUser,
   getLoggedUser,
 } from "../src/frappe";
@@ -36,6 +37,20 @@ const API_TOKEN_PROPS: NexWaveApiTokenAuthProps = {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Frappe REST client", () => {
+  it("uses the site's time zone at a UTC date boundary", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T11:30:00Z"));
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ message: { time_zone: "Pacific/Auckland" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(await frappeSiteDate(API_TOKEN_PROPS)).toBe("2026-01-02");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://demo.example.com/api/method/frappe.client.get_time_zone");
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("token api-key:api-secret");
+  });
+
+  it.each([{}, { message: null }, { message: { time_zone: "" } }, { message: { time_zone: "Invalid/Zone" } }])("rejects an unconfirmed site time zone: %j", async (payload) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(payload)));
+    await expect(frappeSiteDate(API_TOKEN_PROPS)).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+  });
+
   it.each(["<html>private failure</html>", "null", "{}", "{\"data\":null}"])("does not treat invalid list data as no records: %s", async (body) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 200 })));
     await expect(frappeList(PROPS, "Customer", ["name"])).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");

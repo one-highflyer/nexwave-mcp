@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { documentDetails } from "./document-details";
-import { frappeGet, frappeMapDraft, frappeWrite } from "./frappe";
+import { frappeGet, frappeMapDraft, frappeSiteDate, frappeWrite } from "./frappe";
 import { sha256 } from "./security";
 import { registerWriteTool } from "./tool-contract";
 import { structuredResult, ToolError } from "./tool-result";
@@ -16,7 +16,7 @@ const ITEM = {
   rate: z.number().nonnegative().max(1e12).optional().describe("Explicit rate. On create, omit to use the source rate or NexWave pricing. On an existing update row, omission retains the saved rate."), description: z.string().max(10000).optional(),
   warehouse: ID.optional(), discount_percentage: z.number().min(0).max(100).optional(),
 };
-const SO_ITEM = { ...ITEM, delivery_date: DATE.optional(), prevdoc_docname: ID.optional().describe("Exact submitted Customer Quotation ID; requires quotation_item."), quotation_item: ID.optional().describe("Exact source item row name, not its item code or row number.") };
+const SO_ITEM = { ...ITEM, delivery_date: DATE.optional(), prevdoc_docname: ID.optional().describe("Exact submitted Customer or linked Lead Quotation ID; requires quotation_item."), quotation_item: ID.optional().describe("Exact source item row name, not its item code or row number.") };
 const PI_ITEM = { ...ITEM, expense_account: ID.optional(), cost_center: ID.optional(), purchase_order: ID.optional().describe("Exact submitted Purchase Order ID; requires po_detail."), po_detail: ID.optional().describe("Exact source item row name, not its item code or row number.") };
 const COMMON = { currency: ID.optional(), taxes_and_charges: ID.optional(), payment_terms_template: ID.optional(), tc_name: ID.optional() };
 const SO_FIELDS = { ...COMMON, transaction_date: DATE.optional(), delivery_date: DATE.optional(), selling_price_list: ID.optional() };
@@ -35,15 +35,15 @@ type Operation = keyof typeof SCHEMAS;
 type Row = Record<string, unknown>;
 type Target = "Sales Order" | "Purchase Invoice";
 const LINKS = ["prevdoc_docname", "quotation_item", "purchase_order", "po_detail", "purchase_receipt", "pr_detail", "material_request", "material_request_item", "sales_order", "sales_order_item", "purchase_order_item"];
-const MAPPED_ITEM_FIELDS = [...Object.keys(ITEM), "conversion_factor", "price_list_rate", "discount_amount", "delivery_date", "expense_account", "cost_center", "project", "item_tax_template", ...LINKS];
-const MAPPED_HEADERS = ["order_type", "apply_discount_on", "additional_discount_percentage", "currency", "conversion_rate", "selling_price_list", "buying_price_list", "price_list_currency", "plc_conversion_rate", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "address_display", "supplier_address", "shipping_address_name", "shipping_address", "contact_person", "contact_display", "contact_email", "contact_mobile", "credit_to", "ignore_pricing_rule"];
+const MAPPED_ITEM_FIELDS = [...Object.keys(ITEM), "conversion_factor", "price_list_rate", "discount_amount", "margin_type", "margin_rate_or_amount", "rate_with_margin", "base_rate_with_margin", "delivery_date", "expense_account", "cost_center", "project", "item_tax_template", ...LINKS];
+const MAPPED_HEADERS = ["order_type", "apply_discount_on", "additional_discount_percentage", "currency", "conversion_rate", "selling_price_list", "buying_price_list", "price_list_currency", "plc_conversion_rate", "taxes_and_charges", "tax_category", "disable_rounded_total", "payment_terms_template", "tc_name", "terms", "customer_address", "address_display", "supplier_address", "shipping_address_name", "shipping_address", "contact_person", "contact_display", "contact_email", "contact_mobile", "credit_to", "ignore_pricing_rule"];
 const TAX_FIELDS = ["charge_type", "row_id", "account_head", "description", "included_in_print_rate", "included_in_paid_amount", "cost_center", "rate", "tax_amount", "account_currency", "add_deduct_tax", "category"];
 
 export function registerTransactionWrites(server: McpServer, currentProps: () => Promise<NexWaveAuthProps>, env?: Env) {
   for (const name of Object.keys(SCHEMAS) as Operation[]) {
     const target = name.includes("sales_order") ? "Sales Order" : "Purchase Invoice";
     registerWriteTool(server, name, {
-      description: `${name.startsWith("create_") ? "Create" : "Update"} one draft ${target}. Optional item source links use exact document and child row IDs and native ERPNext conversion. Sources must be submitted, open and match company, party and currency; quotations must address a Customer. Up to 50 items and 5 source documents. Updates require expected_modified and retain source links on named rows. Purchase Invoices are ordinary unpaid drafts without stock updates. Linked creates retain compatible percentage document discounts; fixed document discounts require the normal NexWave workflow. Drafts do not reserve source quantities. Review saved totals before submission.`,
+      description: `${name.startsWith("create_") ? "Create" : "Update"} one draft ${target}. Optional item source links use exact document and child row IDs. Sources must be submitted, open and match company, party and currency. A Lead quotation requires an existing Customer with that exact lead_name; expired Lead quotations require the normal NexWave workflow. Up to 50 items and 5 source documents. Updates require expected_modified and retain source links on named rows. Purchase Invoices are ordinary unpaid drafts without stock updates. Linked creates retain compatible percentage document discounts; fixed document discounts require the normal NexWave workflow. Drafts do not reserve source quantities. Review saved totals before submission.`,
       inputSchema: SCHEMAS[name],
     }, async (input) => executeTransactionWrite(env, await currentProps(), name, input));
   }
@@ -67,6 +67,7 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
   }
   const { request_key: _key, name: _name, expected_modified: _modified, ...values } = input;
   let current: Row | undefined;
+  let customer: Row | undefined;
   if (operation.startsWith("update_")) {
     current = await frappeGet<Row>(props, target, String(input.name));
     if (current.docstatus !== 0) throw invalid("Only draft documents can be changed.");
@@ -74,7 +75,8 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
     if (!Object.keys(values).length) throw invalid("Supply at least one field to change.");
     if (!sales && (current.is_return || current.update_stock || current.is_paid)) throw invalid("Use an ordinary unpaid Purchase Invoice draft without stock updates or returns.");
   } else {
-    await frappeGet(props, sales ? "Customer" : "Supplier", String(values[sales ? "customer" : "supplier"]));
+    const party = await frappeGet<Row>(props, sales ? "Customer" : "Supplier", String(values[sales ? "customer" : "supplier"]));
+    if (sales) customer = party;
   }
   const patch: Row = { ...values };
   if (current) patch.modified = current.modified;
@@ -101,7 +103,10 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
       const source = await frappeGet<Row>(props, sales ? "Quotation" : "Purchase Order", sourceName);
       if (source.name !== sourceName || source.docstatus !== 1 || ["Closed", "On Hold", "Cancelled", "Lost"].includes(String(source.status))) throw invalid("Use a submitted, open source document.");
       if (source.company !== effective.company) throw invalid("Source documents must use the target company.");
-      if (sales ? source.quotation_to !== "Customer" || source.party_name !== effective.customer : source.supplier !== effective.supplier) throw invalid("Source documents must use the target Customer or Supplier. Linked quotations must address a Customer.");
+      if (sales && source.quotation_to === "Lead") {
+        customer ??= await frappeGet<Row>(props, "Customer", String(effective.customer));
+        if (customer.name !== effective.customer || typeof source.party_name !== "string" || !source.party_name || customer.lead_name !== source.party_name) throw invalid("A Lead quotation requires the target Customer's exact lead_name link. Create or select that linked Customer first.");
+      } else if (sales ? source.quotation_to !== "Customer" || source.party_name !== effective.customer : source.supplier !== effective.supplier) throw invalid("Source documents must use the target Customer or Supplier.");
       if (sales && ((current && (source.order_type ?? "Sales") !== (current.order_type ?? "Sales"))
         || (sources.size && (source.order_type ?? "Sales") !== (sources.values().next().value!.document.order_type ?? "Sales")))) throw invalid("Source quotations must use the same order type as each other and the existing Sales Order.");
       if (effective.currency && source.currency !== effective.currency) throw invalid("Source and target document currencies must match.");
@@ -114,6 +119,8 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
     source.rows.add(String(row[rowField]));
   }
   if (!current && sources.size) {
+    const taxContext = [...sources.values()].map(({ document }) => canonical({ tax_category: document.tax_category ?? "", disable_rounded_total: document.disable_rounded_total ?? 0 }));
+    if (taxContext.some((context) => context !== taxContext[0])) throw invalid("Source documents must use the same tax category and rounding setting.");
     const settings = [...sources.values()].map(({ document }) => discountSettings(document));
     if (settings.some((s) => s.additional_discount_percentage > 0)
       && (settings.some((s) => canonical(s) !== canonical(settings[0])) || rows.some((row) => !row[parentField]))) {
@@ -132,6 +139,13 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
     if (terms.disabled || !terms[sales ? "selling" : "buying"] || typeof terms.terms !== "string" || terms.terms.length > 100000) throw invalid("Use an enabled terms template for this transaction type.");
     patch.terms = "";
   }
+  // These conversions perform reads only. Validate them before reserving a write.
+  const leadDrafts = new Map<string, Row>();
+  for (const [sourceName, source] of sources) {
+    if (sales && source.document.quotation_to === "Lead") {
+      leadDrafts.set(sourceName, await mapLeadQuotation(props, source.document, source.rows, String(effective.customer)));
+    }
+  }
   const reservation = await trustedEnv.NEXWAVE_MCP_DB.prepare("INSERT INTO write_requests (site_id, user_id, operation, request_key, fingerprint) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING")
     .bind(...bindings, fingerprint).run();
   if (reservation.meta.changes !== 1) throw uncertain();
@@ -140,7 +154,9 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
     let sourceHeaders: Row = {};
     let taxSignature: string | undefined;
     for (const [sourceName, source] of sources) {
-      const mapped = await frappeMapDraft(props, target, sourceName, [...source.rows]);
+      const mapped = sales && source.document.quotation_to === "Lead"
+        ? leadDrafts.get(sourceName)!
+        : await frappeMapDraft(props, target, sourceName, [...source.rows]);
       if (mapped.company !== effective.company || mapped[sales ? "customer" : "supplier"] !== effective[sales ? "customer" : "supplier"] || mapped.currency !== source.document.currency) throw invalid("The converted draft does not match the target company, party and currency.");
       if (sales && (mapped.order_type ?? "Sales") !== (source.document.order_type ?? "Sales")) throw invalid("The converted draft does not match the source quotation order type.");
       if (!current && canonical(discountSettings(mapped)) !== canonical(discountSettings(source.document))) throw invalid("The converted draft does not preserve the source document discount.");
@@ -193,6 +209,44 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
   }
 }
 
+// The native Lead quotation mapper can insert a Customer. Map a readable snapshot
+// instead, and let the normal Sales Order insert/submit own defaults and validation.
+async function mapLeadQuotation(props: NexWaveAuthProps, source: Row, selectedRows: Set<string>, customer: string): Promise<Row> {
+  const unsupported = (setting: string) => invalid(`Lead quotation conversion does not support ${setting}. Use the normal NexWave conversion workflow.`);
+  if (typeof source.currency !== "string" || !source.currency
+    || !(source.valid_till === null || typeof source.valid_till === "string")
+    || !["conversion_rate", "plc_conversion_rate"].every((field) => typeof source[field] === "number" && Number.isFinite(source[field]) && Number(source[field]) > 0)
+    || !["additional_discount_percentage", "discount_amount"].every((field) => typeof source[field] === "number" && Number.isFinite(source[field]))) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The Lead quotation's currency and discount settings could not be confirmed. Check field permissions or use the normal NexWave conversion workflow.");
+  }
+  if (source.has_unit_price_items) throw unsupported("unit-price items");
+  if (source.referral_sales_partner) throw unsupported("referral sales partners");
+  if (Array.isArray(source.sales_team) && source.sales_team.length) throw unsupported("source sales-team allocations");
+  if (source.valid_till) {
+    if (!DATE.safeParse(source.valid_till).success || !DATE.safeParse(source.transaction_date).success
+      || String(source.valid_till) < String(source.transaction_date) || String(source.valid_till) < await frappeSiteDate(props)) {
+      throw invalid("Expired or invalid Lead quotations require the normal NexWave conversion workflow.");
+    }
+  }
+  const items = documentRows(source).filter((row) => selectedRows.has(String(row.name))).map((row) => {
+    if (row.is_alternative || row.has_alternative_item) throw unsupported("alternative items");
+    if (row.against_blanket_order) throw unsupported("blanket-order lines");
+    const finite = (field: string) => typeof row[field] === "number" && Number.isFinite(row[field]);
+    if (!["qty", "stock_qty", "ordered_qty", "conversion_factor", "rate"].every(finite)
+      || (row.margin_type && (!["Amount", "Percentage"].includes(String(row.margin_type)) || !finite("margin_rate_or_amount")))
+      || !["is_alternative", "has_alternative_item", "against_blanket_order"].every((field) => row[field] === 0)
+      || Number(row.qty) <= 0 || Number(row.stock_qty) < 0 || Number(row.ordered_qty) < 0
+      || Number(row.conversion_factor) <= 0 || Number(row.rate) < 0) {
+      throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The Lead quotation's prices and available quantities could not be confirmed. Check field permissions or use the normal NexWave conversion workflow.");
+    }
+    return { ...select(row, MAPPED_ITEM_FIELDS), qty: Math.max(0, Number(row.stock_qty) - Number(row.ordered_qty)) / Number(row.conversion_factor), prevdoc_docname: source.name, quotation_item: row.name };
+  });
+  // Native mapping also leaves the Customer's payment terms to normal defaults.
+  const headers = select(source, MAPPED_HEADERS.filter((field) => field !== "payment_terms_template"));
+  return { ...headers, doctype: "Sales Order", company: source.company, customer, currency: source.currency,
+    items, taxes: documentRows(source, "taxes").map((row) => select(row, TAX_FIELDS)) };
+}
+
 function mergeRows(requested: Row[], current?: Row): Row[] {
   const existing = current ? documentRows(current) : [];
   const names = new Set<string>();
@@ -235,7 +289,7 @@ function verifySavedDiscount(saved: Row, source: Row) {
   } catch { /* A saved result cannot be reported as a rejected, uncommitted request. */ }
   throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The saved source discount could not be confirmed.");
 }
-const RESULT_FIELDS = ["name", "modified", "docstatus", "status", "company", "customer", "customer_name", "supplier", "supplier_name", "order_type", "apply_discount_on", "additional_discount_percentage", "discount_amount", "transaction_date", "delivery_date", "posting_date", "due_date", "bill_no", "bill_date", "currency", "selling_price_list", "buying_price_list", "taxes_and_charges", "payment_terms_template", "tc_name", "conversion_rate", "total", "net_total", "grand_total", "total_taxes_and_charges", "rounded_total", "update_stock"];
+const RESULT_FIELDS = ["name", "modified", "docstatus", "status", "company", "customer", "customer_name", "supplier", "supplier_name", "order_type", "apply_discount_on", "additional_discount_percentage", "discount_amount", "transaction_date", "delivery_date", "posting_date", "due_date", "bill_no", "bill_date", "currency", "selling_price_list", "buying_price_list", "taxes_and_charges", "tax_category", "disable_rounded_total", "payment_terms_template", "tc_name", "conversion_rate", "total", "net_total", "grand_total", "total_taxes_and_charges", "rounded_total", "update_stock"];
 function result(doctype: Target, saved: Row, replayed: boolean) {
   return structuredResult({ doctype, name: saved.name, replayed, document: { ...select(saved, RESULT_FIELDS), ...documentDetails(doctype, saved, 0, 50) }, note: replayed ? "This request was already completed. The document shown is its current permission-visible state." : "Draft saved. Review its source links, prices, taxes and totals. Drafts do not reserve source quantities." });
 }

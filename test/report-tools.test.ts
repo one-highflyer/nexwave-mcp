@@ -1,5 +1,105 @@
-import { describe, expect, it } from "vitest";
-import { normaliseAgeingSummary, normaliseReportResult, validateDateRange } from "../src/report-tools";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { normaliseAgeingSummary, normaliseReportResult, registerReportTools, validateDateRange } from "../src/report-tools";
+import type { NexWaveAuthProps } from "../src/types";
+
+const PROPS: NexWaveAuthProps = {
+  authType: "api_token", siteId: "site_test", siteName: "Demo", baseUrl: "https://demo.example.com",
+  user: "service@example.com", upstreamApiKey: "api-key", upstreamApiSecret: "api-secret",
+};
+const COMPANY = "Example Company";
+const BANK_ARGS = { company: COMPANY, account: "Bank - EC", report_date: "2026-06-30" };
+const GL_ARGS = { company: COMPANY, from_date: "2026-06-01", to_date: "2026-06-30" };
+const BANK_ACCOUNT = { company: COMPANY, account_type: "Bank", disabled: 0, is_group: 0 };
+
+function reportHandler(toolName: string) {
+  let invoke: ((args: Record<string, unknown>) => Promise<unknown>) | undefined;
+  const server = {
+    registerTool(name: string, definition: { inputSchema: { parse: (args: unknown) => unknown } }, handler: (args: unknown) => Promise<unknown>) {
+      if (name === toolName) invoke = (args) => handler(definition.inputSchema.parse(args));
+    },
+  };
+  registerReportTools(server as never, async () => PROPS);
+  if (!invoke) throw new Error(`Tool ${toolName} was not registered.`);
+  return invoke;
+}
+
+describe("financial report filter validation", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    { company: "Other Company" }, { account_type: "Receivable" }, { disabled: 1 }, { is_group: 1 },
+  ])("rejects an invalid bank reconciliation Account before running the report: %j", async (change) => {
+    const fetchMock = vi.fn(async (_input: string) => Response.json({ data: { ...BANK_ACCOUNT, ...change } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reportHandler("get_bank_reconciliation_statement")(BANK_ARGS)).rejects.toThrow("enabled Bank or Cash ledger Account in the selected company");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(`${PROPS.baseUrl}/api/resource/Account/Bank%20-%20EC`);
+  });
+
+  it.each(["Bank", "Cash"])("reads an enabled %s Account with the caller's permission before running reconciliation", async (account_type) => {
+    const fetchMock = vi.fn(async (input: string, _init?: RequestInit) => new URL(input).pathname.startsWith("/api/resource/")
+      ? Response.json({ data: { ...BANK_ACCOUNT, account_type } })
+      : Response.json({ message: { columns: [], result: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await reportHandler("get_bank_reconciliation_statement")(BANK_ARGS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ headers: expect.objectContaining({ Authorization: "token api-key:api-secret" }) });
+    const url = new URL(fetchMock.mock.calls[1][0]);
+    expect(url.pathname).toBe("/api/method/frappe.desk.query_report.run");
+    expect(JSON.parse(new URLSearchParams(String(fetchMock.mock.calls.at(-1)![1]?.body)).get("filters")!)).toMatchObject({ company: COMPANY, account: BANK_ARGS.account, report_date: BANK_ARGS.report_date });
+  });
+
+  it.each([
+    ["get_bank_reconciliation_statement", BANK_ARGS],
+    ["get_general_ledger", { ...GL_ARGS, group_by: "account", accounts: ["Assets - EC"] }],
+  ] as const)("stops %s when the caller cannot read the Account", async (tool, args) => {
+    const fetchMock = vi.fn(async () => Response.json({ exception: "Private upstream detail" }, { status: 403 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reportHandler(tool)(args)).rejects.toThrow("PERMISSION_DENIED");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a voucher number with voucher grouping and gives an alternative before any request", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reportHandler("get_general_ledger")({ ...GL_ARGS, voucher_no: "INV-001", group_by: "voucher" })).rejects.toThrow("Use voucher_consolidated");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects leaf Accounts in account grouping even after a valid group Account", async () => {
+    const fetchMock = vi.fn(async (input: string) => Response.json({ data: { is_group: input.includes("Assets") ? 1 : 0 } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reportHandler("get_general_ledger")({ ...GL_ARGS, group_by: "account", accounts: ["Assets - EC", "Bank - EC"] })).rejects.toThrow("use voucher_consolidated for a ledger Account");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => url.includes("/api/resource/Account/"))).toBe(true);
+  });
+
+  it("rejects an Account response without its group status", async () => {
+    const fetchMock = vi.fn(async () => Response.json({ data: {} }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(reportHandler("get_general_ledger")({ ...GL_ARGS, group_by: "account", accounts: ["Assets - EC"] })).rejects.toThrow("UPSTREAM_INVALID_RESPONSE");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [{ voucher_no: "INV-001", accounts: ["Bank - EC"] }, "Categorize by Voucher (Consolidated)", 0],
+    [{ group_by: "voucher_consolidated", voucher_no: "INV-001" }, "Categorize by Voucher (Consolidated)", 0],
+    [{ group_by: "voucher" }, "Categorize by Voucher", 0],
+    [{ group_by: "party", voucher_no: "INV-001" }, "Categorize by Party", 0],
+    [{ group_by: "account", voucher_no: "INV-001" }, "Categorize by Account", 0],
+    [{ group_by: "account", accounts: ["Assets - EC", "Liabilities - EC"] }, "Categorize by Account", 2],
+  ])("preserves valid GL grouping: %j", async (args, category, accountReads) => {
+    const fetchMock = vi.fn(async (input: string, _init?: RequestInit) => new URL(input).pathname.startsWith("/api/resource/")
+      ? Response.json({ data: { is_group: 1 } })
+      : Response.json({ message: { columns: [], result: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await reportHandler("get_general_ledger")({ ...GL_ARGS, ...args });
+    expect(fetchMock).toHaveBeenCalledTimes(Number(accountReads) + 1);
+    const url = new URL(fetchMock.mock.calls.at(-1)![0]);
+    expect(url.pathname).toBe("/api/method/frappe.desk.query_report.run");
+    expect(JSON.parse(new URLSearchParams(String(fetchMock.mock.calls.at(-1)![1]?.body)).get("filters")!)).toMatchObject({ categorize_by: category, company: COMPANY });
+  });
+});
 
 describe("report tool output", () => {
   it("keeps report columns, removes HTML, and truncates rows", () => {

@@ -187,7 +187,22 @@ export async function frappeSubmitDocument(props: NexWaveAuthProps, doctype: Sub
   return response.data;
 }
 
-/** Fixed native conversions only. A caller must verify source access and reserve the write first. */
+/** Fixed read for the site's date boundary; quotation expiry uses the site's time zone. */
+export async function frappeSiteDate(props: NexWaveAuthProps): Promise<string> {
+  const url = new URL("/api/method/frappe.client.get_time_zone", props.baseUrl);
+  const response = await frappeFetch<{ message?: { time_zone?: unknown } }>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
+  try {
+    const zone = response.message?.time_zone;
+    if (typeof zone !== "string" || !zone) throw new Error();
+    const parts = new Intl.DateTimeFormat("en", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    const value = (type: string) => parts.find((part) => part.type === type)!.value;
+    return `${value("year")}-${value("month")}-${value("day")}`;
+  } catch {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The site's current date could not be confirmed. Use the normal NexWave conversion workflow.");
+  }
+}
+
+/** Fixed native conversions only. Verify access and reserve first. Never pass a Lead quotation. */
 export async function frappeMapDraft(
   props: NexWaveAuthProps,
   doctype: "Sales Order" | "Purchase Invoice",

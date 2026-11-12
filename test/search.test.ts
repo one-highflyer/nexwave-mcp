@@ -23,14 +23,78 @@ describe("bounded directory search", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("requires confirmation when two legal names normalize to the same text", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ data: [
+  // Apply the actual LIKE filters so a literal query cannot see suffix variants.
+  function mockDirectory(rows: Record<string, string>[]) {
+    const fetchMock = vi.fn(async (input: string) => {
+      const url = new URL(input);
+      const filters = JSON.parse(url.searchParams.get("or_filters")!) as string[][];
+      const matched = rows.filter((row) => filters.some(([, field, operator, pattern]) => {
+        expect(operator).toBe("like");
+        return row[field]?.toLowerCase().includes(pattern.slice(1, -1).toLowerCase());
+      }));
+      return Response.json({ data: matched.slice(0, Number(url.searchParams.get("limit_page_length"))) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it.each(["Example Limited", "A Limited"])("retrieves normalized alternatives before confirming %s", async (query) => {
+    const stem = query.split(" ")[0];
+    const rows = [
+      { name: "SUP-001", supplier_name: query },
+      { name: "SUP-002", supplier_name: `${stem} Ltd` },
+    ];
+    const fetchMock = mockDirectory(rows);
+    const result = await searchRecords(props, "Supplier", fields, searchFields, { search: query, limit: 5, directory: true, legalNames: true });
+    expect(result.records).toEqual(rows);
+    expect(result.meta).toMatchObject({ match_status: "candidates", broadened: true, candidate_retrieval_complete: true });
+    expect(result.meta.matched_id).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(new URL(fetchMock.mock.calls[0][0]).searchParams.get("or_filters")!)[0][3]).toBe(`%${query}%`);
+    expect(JSON.parse(new URL(fetchMock.mock.calls[1][0]).searchParams.get("or_filters")!)[0][3]).toBe(`%${stem.toLowerCase()}%`);
+  });
+
+  it("confirms a unique normalized name after retrieving alternatives", async () => {
+    const fetchMock = mockDirectory([
+      { name: "SUP-001", supplier_name: "Example Limited" },
+      { name: "SUP-002", supplier_name: "Example Supplies Ltd" },
+    ]);
+    const result = await searchRecords(props, "Supplier", fields, searchFields, { search: "Example Limited", limit: 5, directory: true, legalNames: true });
+    expect(result.meta).toMatchObject({ match_status: "matched", matched_id: "SUP-001", broadened: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps an explicit ID lookup without name broadening", async () => {
+    const fetchMock = mockDirectory([
       { name: "SUP-001", supplier_name: "Example Limited" },
       { name: "SUP-002", supplier_name: "Example Ltd" },
-    ] })));
+    ]);
+    const result = await searchRecords(props, "Supplier", fields, searchFields, { search: "SUP-001", limit: 5, directory: true, legalNames: true });
+    expect(result.meta).toMatchObject({ match_status: "matched", matched_id: "SUP-001", broadened: false });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("checks ambiguity when the record ID is also its display name", async () => {
+    const fetchMock = mockDirectory([
+      { name: "Example Limited", supplier_name: "Example Limited" },
+      { name: "Example Ltd", supplier_name: "Example Ltd" },
+    ]);
     const result = await searchRecords(props, "Supplier", fields, searchFields, { search: "Example Limited", limit: 5, directory: true, legalNames: true });
+    expect(result.records).toHaveLength(2);
     expect(result.meta.match_status).toBe("candidates");
     expect(result.meta.matched_id).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not select a fuzzy alternative or confirm a full candidate page", async () => {
+    mockDirectory([{ name: "SUP-001", supplier_name: "Example Office" }]);
+    const fuzzy = await searchRecords(props, "Supplier", fields, searchFields, { search: "Example Limited", limit: 5, directory: true, legalNames: true });
+    expect(fuzzy.meta.match_status).toBe("candidates");
+    expect(fuzzy.meta.matched_id).toBeUndefined();
+    mockDirectory(Array.from({ length: 50 }, (_, idx) => ({ name: `SUP-${idx}`, supplier_name: idx ? `Example ${idx}` : "Example Limited" })));
+    const bounded = await searchRecords(props, "Supplier", fields, searchFields, { search: "Example Limited", limit: 5, directory: true, legalNames: true });
+    expect(bounded.meta).toMatchObject({ match_status: "candidates", candidate_retrieval_complete: false, truncated: true });
+    expect(bounded.meta.matched_id).toBeUndefined();
   });
 
   it("never auto-selects a truncated display-name match", async () => {

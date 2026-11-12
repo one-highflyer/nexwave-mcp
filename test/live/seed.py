@@ -196,6 +196,16 @@ def run():
         "items": [{"item_code": quote_items[1], "qty": 6, "uom": "Nos", "rate": 40},
             {"item_code": quote_items[1], "qty": 9, "uom": "Nos", "rate": 45}]}).insert()
     source_quotation.submit()
+    lead_quotation = frappe.get_doc({"doctype": "Quotation", "company": alpha.name,
+        "quotation_to": "Lead", "party_name": conversion_lead.name,
+        "transaction_date": "2025-01-10", "valid_till": "2099-12-31",
+        "currency": "NZD", "selling_price_list": "MCP NZD", "ignore_pricing_rule": 1,
+        "apply_discount_on": "Net Total", "additional_discount_percentage": 10,
+        "taxes_and_charges": sales_templates[0],
+        "taxes": [{"charge_type": "On Net Total", "account_head": frappe.get_doc("Sales Taxes and Charges Template", sales_templates[0]).taxes[0].account_head, "description": "GST", "rate": 15}],
+        "items": [{"item_code": quote_items[1], "qty": 6, "uom": "Nos", "rate": 40},
+            {"item_code": quote_items[1], "qty": 9, "uom": "Nos", "rate": 45}]}).insert()
+    lead_quotation.submit()
     source_purchase_order = frappe.get_doc({"doctype": "Purchase Order", "company": alpha.name,
         "supplier": "MCP Supplier", "transaction_date": "2025-01-10", "schedule_date": "2025-01-20",
         "currency": "NZD", "buying_price_list": "MCP NZD", "ignore_pricing_rule": 1,
@@ -263,6 +273,7 @@ def run():
         "quote_contacts": quote_contacts, "quote_addresses": quote_addresses,
         "source_quotation": source_quotation.name,
         "source_quotation_rows": [row.name for row in source_quotation.items],
+        "lead_quotation": lead_quotation.name,
         "source_purchase_order": source_purchase_order.name,
         "source_purchase_order_rows": [row.name for row in source_purchase_order.items],
         "conversion_lead": conversion_lead.name, "conversion_prospect": conversion_prospect.name,

@@ -16,7 +16,7 @@ it("returns JSON without changing the error flag, content or request ID", async 
   expect(await response.json()).toEqual(payload);
 });
 
-it.each(["INVALID_ARGUMENT", "UPSTREAM_TIMEOUT", "PERMISSION_DENIED", "NOT_FOUND", "WRITE_OUTCOME_UNKNOWN", "CONFLICT", "VALIDATION_FAILED"])("delivers an explicit opt-in %s envelope", async (code) => {
+it.each(["INVALID_ARGUMENT", "UPSTREAM_TIMEOUT", "PERMISSION_DENIED", "NOT_FOUND", "WRITE_OUTCOME_UNKNOWN", "CONFLICT", "VALIDATION_FAILED", "WORKFLOW_REQUIRED"])("delivers an explicit opt-in %s envelope", async (code) => {
   const req = request();
   req.headers.set(SERVICE_ERROR_FORMAT_HEADER, "result");
   const error = { code, message: "Safe explanation", retryable: code === "UPSTREAM_TIMEOUT" };

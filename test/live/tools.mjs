@@ -241,6 +241,16 @@ try {
   assert.equal(ledgerPage.next_offset, 2);
   const continued = await call("restricted", "get_general_ledger", { ...ledgerArgs, offset: 2 });
   assert.deepEqual([...ledgerPage.rows, ...continued.rows], ledger.rows);
+  await call("all", "get_general_ledger", { ...ledgerArgs, voucher_no: fixture.sales }, "INVALID_ARGUMENT");
+  await call("all", "get_general_ledger", { ...ledgerArgs, group_by: "account" }, "INVALID_ARGUMENT");
+  const consolidatedVoucher = await call("all", "get_general_ledger", { ...ledgerArgs, voucher_no: fixture.sales, group_by: "voucher_consolidated" });
+  assert.ok(consolidatedVoucher.rows.some((row) => row.voucher_no === fixture.sales));
+  const cashAccounts = await call("all", "list_accounts", { company, account_type: "Cash" });
+  const cashAccount = cashAccounts.records.find((row) => row.is_group === 0 && row.disabled === 0);
+  assert.ok(cashAccount);
+  await call("all", "get_bank_reconciliation_statement", { company, account: cashAccount.name, report_date: "2025-01-31" });
+  await call("all", "get_bank_reconciliation_statement", { company: "MCP Hidden", account: cashAccount.name, report_date: "2025-01-31" }, "INVALID_ARGUMENT");
+  await call("all", "get_bank_reconciliation_statement", { company, account: fixture.receivable, report_date: "2025-01-31" }, "INVALID_ARGUMENT");
 
   // Positive control proves the hidden fixture exists, then exercise the same ID with restricted credentials.
   assert.equal((await call("all", "get_document", { doctype: "Sales Invoice", name: fixture.hidden })).grand_total, 777);
@@ -491,6 +501,8 @@ try {
   assert.equal((await call("all", "create_draft_sales_order", salesOrderArgs)).replayed, true);
   const savedSalesOrder = await call("all", "get_document", { doctype: "Sales Order", name: salesOrder.name });
   assert.equal(savedSalesOrder.items[0].quotation_item, sourceQuote.items[1].name);
+  assert.ok(Array.isArray(savedSalesOrder.taxes), "The saved tax table must be available for review");
+  assert.ok(Array.isArray(savedSalesOrder.payment_schedule), "The saved payment schedule must be available for review");
   const salesOrderUpdate = { request_key: "live-sales-order-linked-update", name: salesOrder.name,
     expected_modified: savedSalesOrder.modified,
     items: [{ name: savedSalesOrder.items[0].name, item_code: fixture.quote_items[1], qty: 4 }] };
@@ -517,6 +529,30 @@ try {
   assert.equal(standaloneSalesOrder.document.docstatus, 0);
   assert.ok(!standaloneSalesOrder.document.items[0].quotation_item);
 
+  // The quotation was submitted for the Lead before its Customer was created above.
+  const sourceLeadQuote = await call("all", "get_document", { doctype: "Quotation", name: fixture.lead_quotation });
+  assert.equal(sourceLeadQuote.quotation_to, "Lead");
+  assert.equal(sourceLeadQuote.party_name, fixture.conversion_lead);
+  const leadOrder = await call("all", "create_draft_sales_order", { ...salesOrderArgs,
+    request_key: "live-lead-sales-order-create", customer: convertedCustomer.name,
+    payment_terms_template: fixture.payment_terms,
+    items: [{ item_code: fixture.quote_items[1], qty: 3, prevdoc_docname: sourceLeadQuote.name,
+      quotation_item: sourceLeadQuote.items[1].name }] });
+  assert.equal(leadOrder.document.additional_discount_percentage, 10);
+  assert.equal(leadOrder.document.items[0].rate, sourceLeadQuote.items[1].rate);
+  assert.equal(leadOrder.document.taxes[0].account_head, sourceLeadQuote.taxes[0].account_head);
+  assert.equal(leadOrder.document.taxes[0].rate, 15);
+  assert.ok(leadOrder.document.payment_schedule[0].payment_amount > 0);
+  const leadOrderUpdated = await call("all", "update_draft_sales_order", {
+    request_key: "live-lead-sales-order-update", name: leadOrder.name, expected_modified: leadOrder.document.modified,
+    items: [{ name: leadOrder.document.items[0].name, item_code: fixture.quote_items[1], qty: 4 }] });
+  assert.equal(leadOrderUpdated.document.items[0].quotation_item, sourceLeadQuote.items[1].name);
+  assert.equal(leadOrderUpdated.document.items[0].prevdoc_docname, sourceLeadQuote.name);
+  const customerLinksQuery = new URLSearchParams({ fields: JSON.stringify(["name"]),
+    filters: JSON.stringify([["lead_name", "=", fixture.conversion_lead]]) });
+  const linkedCustomers = await backendRequest("all", `/api/resource/Customer?${customerLinksQuery}`);
+  assert.deepEqual(linkedCustomers.map((row) => row.name), [convertedCustomer.name], "Conversion must not create another Customer");
+
   const sourcePurchaseOrder = await call("all", "get_document", { doctype: "Purchase Order", name: fixture.source_purchase_order });
   assert.equal(sourcePurchaseOrder.docstatus, 1);
   assert.deepEqual(sourcePurchaseOrder.items.map((row) => row.item_code), [fixture.quote_items[1], fixture.quote_items[1]]);
@@ -542,6 +578,10 @@ try {
   ], "A partial bill must reference the selected duplicate PO row");
   assert.equal((await call("all", "create_draft_purchase_invoice", purchaseInvoiceArgs)).replayed, true);
   const savedPurchaseInvoice = await call("all", "get_document", { doctype: "Purchase Invoice", name: purchaseInvoice.name });
+  assert.ok(savedPurchaseInvoice.items[0].expense_account);
+  assert.ok(savedPurchaseInvoice.items[0].cost_center);
+  assert.ok(Array.isArray(savedPurchaseInvoice.taxes));
+  assert.ok(Array.isArray(savedPurchaseInvoice.payment_schedule));
   assert.equal(savedPurchaseInvoice.items[0].po_detail, sourcePurchaseOrder.items[1].name);
   const purchaseInvoiceUpdate = { request_key: "live-purchase-invoice-linked-update", name: purchaseInvoice.name,
     expected_modified: savedPurchaseInvoice.modified,
@@ -597,6 +637,12 @@ try {
     "A completed submission replay must never send a second PUT");
 
   const orderBeforeSubmit = await call("all", "get_document", { doctype: "Sales Order", name: salesOrder.name });
+  const submittedLeadOrder = await call("all", "submit_document", submitArgs("Sales Order", leadOrderUpdated.document, "live-submit-lead-sales-order"));
+  assert.equal(submittedLeadOrder.document.docstatus, 1);
+  assert.equal(submittedLeadOrder.document.items[0].quotation_item, sourceLeadQuote.items[1].name);
+  const orderedLeadQuote = await backendRequest("all", `/api/resource/Quotation/${encodeURIComponent(sourceLeadQuote.name)}`);
+  assert.equal(orderedLeadQuote.items[1].ordered_qty, 4, "Native submission updates the exact Lead quotation source row");
+  assert.equal(orderedLeadQuote.items[0].ordered_qty, 0);
   const submittedOrder = await call("all", "submit_document", submitArgs("Sales Order", orderBeforeSubmit, "live-submit-sales-order-0001"));
   assert.equal(submittedOrder.document.docstatus, 1);
   assert.deepEqual(submittedOrder.document.items.map((row) => [row.name, row.qty, row.prevdoc_docname, row.quotation_item]),
