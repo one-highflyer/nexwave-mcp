@@ -681,19 +681,44 @@ describe("service MCP authentication", () => {
     expect(result.structuredContent).toMatchObject(fields);
   });
 
-  it("advertises output contracts and correct read/write annotations for all 50 tools", async () => {
+  it("returns saved Customer source links without exposing other fields", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: {
+      name: "CUSTOMER-1", customer_name: "Example Customer", lead_name: "LEAD-1", prospect_name: "PROSPECT-1",
+      customer_primary_contact: "CONTACT-1", customer_primary_address: "ADDRESS-1", private_field: "hidden",
+    } })));
+    const response = await invokeTool("get_document", { doctype: "Customer", name: "CUSTOMER-1" });
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({ lead_name: "LEAD-1", prospect_name: "PROSPECT-1", customer_primary_contact: "CONTACT-1", customer_primary_address: "ADDRESS-1" });
+    expect(response.structuredContent).not.toHaveProperty("private_field");
+  });
+
+  it("paginates Prospect Lead links and removes unlisted child fields", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ data: {
+      name: "PROSPECT-1", company_name: "Example Prospect", leads: [
+        { name: "ROW-1", lead: "LEAD-1", lead_name: "Example One", private_field: "hidden" },
+        { name: "ROW-2", lead: "LEAD-2", lead_name: "Example Two", private_field: "hidden" },
+        { name: "ROW-3", lead: "LEAD-3", lead_name: "Example Three", private_field: "hidden" },
+      ],
+    } })));
+    const response = await invokeTool("get_document", { doctype: "Prospect", name: "PROSPECT-1", detail_offset: 1, detail_limit: 1 });
+    expect(response.isError).not.toBe(true);
+    expect(response.structuredContent).toMatchObject({ leads: [{ name: "ROW-2", lead: "LEAD-2", lead_name: "Example Two" }], detail_meta: { leads: { count: 3, next_offset: 2, complete: false } } });
+    expect(JSON.stringify(response.structuredContent)).not.toContain("private_field");
+  });
+
+  it("advertises output contracts and correct read/write annotations for all 52 tools", async () => {
     const request = new Request(serviceToolRequest("gateway-token", "ignored", {}), { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }) });
     const response = await handleServiceMcpRequest(request, serviceEnv(await apiTokenSite()), executionContext());
     const body = await response.text();
     const data = body.split("\n").find((line) => line.startsWith("data: "));
     const tools = JSON.parse(data?.slice(6) ?? body).result.tools as Array<{ name: string; inputSchema: { properties: Record<string, { enum?: string[] }> }; outputSchema: { type?: string }; annotations: { readOnlyHint: boolean; destructiveHint: boolean } }>;
-    expect(tools).toHaveLength(50);
+    expect(tools).toHaveLength(52);
     expect(tools.some((tool) => tool.name === "preview_quotation")).toBe(false);
-    const writes = new Set(["create_draft_quotation", "update_draft_quotation", "create_customer", "create_lead", "create_draft_sales_order", "update_draft_sales_order", "create_draft_purchase_invoice", "update_draft_purchase_invoice"]);
+    const writes = new Set(["create_draft_quotation", "update_draft_quotation", "create_customer", "create_lead", "create_draft_sales_order", "update_draft_sales_order", "create_draft_purchase_invoice", "update_draft_purchase_invoice", "submit_document"]);
     const transactions = new Set(["list_sales_invoices", "list_purchase_invoices", "list_sales_orders", "list_purchase_orders", "list_payments", "list_bank_transactions"]);
     for (const tool of tools) {
       expect(tool.outputSchema.type, tool.name).toBe("object");
-      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: !writes.has(tool.name), destructiveHint: tool.name.startsWith("update_") });
+      expect(tool.annotations, tool.name).toMatchObject({ readOnlyHint: !writes.has(tool.name), destructiveHint: tool.name.startsWith("update_") || tool.name === "submit_document" });
       if (tool.name.startsWith("list_") && !["list_item_prices", "list_print_formats"].includes(tool.name)) expect(tool.inputSchema.properties.summary.enum, tool.name).toEqual(transactions.has(tool.name) ? ["count", "totals"] : ["count"]);
     }
   });

@@ -3,6 +3,7 @@ import { ToolError } from "./tool-result";
 const ITEM_FIELDS = ["name", "idx", "item_code", "item_name", "description", "qty", "uom", "stock_qty", "stock_uom", "conversion_factor", "rate", "amount", "base_rate", "base_amount", "net_rate", "net_amount", "warehouse", "delivery_date", "schedule_date", "received_qty", "delivered_qty", "sales_order", "sales_order_item", "purchase_order", "purchase_order_item", "delivery_note", "purchase_receipt"];
 const REFERENCE_FIELDS = ["name", "idx", "reference_doctype", "reference_name", "due_date", "total_amount", "outstanding_amount", "allocated_amount", "exchange_rate", "account"];
 const TABLES: Record<string, Record<string, string[]>> = {
+  Prospect: { leads: ["name", "idx", "lead", "lead_name", "status", "email", "mobile_no"] },
   Quotation: {
     items: ITEM_FIELDS.concat(["price_list_rate", "discount_percentage", "discount_amount", "item_tax_template"]),
     taxes: ["name", "idx", "charge_type", "row_id", "account_head", "description", "included_in_print_rate", "rate", "tax_amount", "total", "cost_center"],

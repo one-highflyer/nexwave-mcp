@@ -33,6 +33,7 @@ const bundle = await build({ entryPoints: [root + "src/index.ts"], bundle: true,
   external: ["cloudflare:*", "node:*"], });
 const adminToken = randomBytes(32).toString("hex");
 let upstreamCalls = 0;
+const documentUpdates = [];
 const mf = new Miniflare(convertV4MiniflareOptions({
   modules: true, script: bundle.outputFiles[0].text,
   compatibilityDate: config.compatibility_date, compatibilityFlags: config.compatibility_flags,
@@ -48,6 +49,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
     headers.delete("host");
     headers.set("X-Frappe-Site-Name", "mcp.localhost");
     upstreamCalls++;
+    if (request.method === "PUT" && url.pathname.startsWith("/api/resource/")) documentUpdates.push(url.pathname);
     return fetch(new URL(url.pathname + url.search, backend), { method: request.method, headers,
       body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer(),
       redirect: "manual", signal: AbortSignal.timeout(15_000) });
@@ -69,7 +71,7 @@ try {
       body: JSON.stringify({ displayName: `CI ${role}`, baseUrl: origin, authType: "api_token",
         apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
         writeCapabilities: role === "readonly" ? [] : role === "restricted" ? ["quotations"]
-          : ["quotations", "leads", "customers", "sales_orders", "purchase_invoices"] }),
+          : ["quotations", "leads", "customers", "sales_orders", "purchase_invoices", "submissions"] }),
     });
     assert.equal(response.status, 201, `Register valid ${role} API credentials`);
     const registered = await response.json();
@@ -92,13 +94,13 @@ try {
     return body.result;
   }
   const tools = (await rpc("all", "tools/list", {})).tools;
-  assert.equal(tools.length, 50);
+  assert.equal(tools.length, 52);
   const schemas = new Map(tools.map((tool) => [tool.name, z.fromJSONSchema(tool.outputSchema)]));
   for (const tool of ["list_work_orders", "list_boms", "list_job_cards", "list_item_prices", "list_price_lists",
-    "list_leads", "list_quotations", "list_tax_templates", "list_print_formats", "list_terms_and_conditions",
+    "list_leads", "list_prospects", "list_quotations", "list_tax_templates", "list_print_formats", "list_terms_and_conditions",
     "list_payment_terms_templates", "create_customer", "create_lead", "create_draft_quotation", "update_draft_quotation",
     "create_draft_sales_order", "update_draft_sales_order", "create_draft_purchase_invoice", "update_draft_purchase_invoice",
-    "get_document_pdf"]) assert.ok(schemas.has(tool), `${tool} must be advertised`);
+    "submit_document", "get_document_pdf"]) assert.ok(schemas.has(tool), `${tool} must be advertised`);
   assert.equal(schemas.has("preview_quotation"), false);
   async function call(role, name, args = {}, errorCode) {
     const result = await rpc(role, "tools/call", { name, arguments: args });
@@ -117,6 +119,20 @@ try {
     }
     checks++;
     return result.structuredContent;
+  }
+  // Direct fixture verification stays on the disposable loopback site and uses its
+  // generated credentials. These reads confirm native effects outside tool allowlists.
+  async function backendRequest(role, path, options = {}) {
+    assert.ok(path.startsWith("/api/resource/"));
+    const credentials = role === "workflow_admin" ? fixture.workflow_admin : fixture.credentials[role];
+    const response = await fetch(new URL(path, backend), {
+      method: options.method ?? "GET", headers: { "X-Frappe-Site-Name": "mcp.localhost",
+        Authorization: `token ${credentials.apiKey}:${credentials.apiSecret}`, "Content-Type": "application/json" },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      redirect: "manual", signal: AbortSignal.timeout(15_000),
+    });
+    assert.equal(response.status, 200, `Disposable backend ${options.method ?? "GET"} ${path.split("?")[0]}`);
+    return (await response.json()).data;
   }
   const company = "MCP Alpha";
   const dates = { from_date: "2025-01-01", to_date: "2025-01-31" };
@@ -300,6 +316,46 @@ try {
   await call("all", "create_customer", { ...createCustomer, request_key: "live-customer-duplicate-0002" }, "CONFLICT");
   const createdCustomers = await call("all", "list_customers", { search: createCustomer.customer_name, search_mode: "literal" });
   assert.deepEqual(createdCustomers.records.map((row) => row.name), [customerCreated.name]);
+
+  const conversionArgs = { request_key: "live-customer-conversion-0001", customer_name: "MCP Converted Customer",
+    customer_group: "Commercial", territory: "New Zealand", lead_name: fixture.conversion_lead };
+  const prospects = await call("all", "list_prospects", { search: "MCP Conversion Prospect", search_mode: "literal" });
+  assert.deepEqual(prospects.records.map((row) => row.name), [fixture.conversion_prospect]);
+  const sourceProspect = await call("all", "get_document", { doctype: "Prospect", name: fixture.conversion_prospect });
+  assert.equal(sourceProspect.company_name, "MCP Conversion Prospect");
+  assert.ok(sourceProspect.leads.some((row) => row.lead === fixture.conversion_lead));
+  await call("all", "create_customer", { ...conversionArgs, request_key: "live-customer-source-mismatch",
+    prospect_name: fixture.prospect_only }, "INVALID_ARGUMENT");
+  await call("all", "create_customer", { ...conversionArgs, request_key: "live-customer-ambiguous-source",
+    lead_name: fixture.ambiguous_lead }, "CONFLICT");
+  await call("crm_restricted", "create_customer", { ...conversionArgs, request_key: "live-customer-inaccessible-source",
+    lead_name: fixture.hidden_lead }, "PERMISSION_DENIED");
+  const convertedCustomer = await call("all", "create_customer", conversionArgs);
+  assert.equal(convertedCustomer.document.lead_name, fixture.conversion_lead);
+  assert.equal(convertedCustomer.document.prospect_name, fixture.conversion_prospect,
+    "A unique Prospect must be derived from the selected Lead's native membership");
+  const savedConvertedCustomer = await call("all", "get_document", { doctype: "Customer", name: convertedCustomer.name });
+  assert.equal(savedConvertedCustomer.lead_name, fixture.conversion_lead);
+  assert.equal(savedConvertedCustomer.prospect_name, fixture.conversion_prospect);
+  const convertedLead = await call("all", "get_document", { doctype: "Lead", name: fixture.conversion_lead });
+  assert.equal(convertedLead.status, "Converted", "The normal Customer hook must convert its source Lead");
+  for (const [doctype, name] of [["Contact", fixture.conversion_contact], ["Address", fixture.conversion_address]]) {
+    const source = await backendRequest("all", `/api/resource/${doctype}/${encodeURIComponent(name)}`);
+    assert.ok(source.links.some((row) => row.link_doctype === "Lead" && row.link_name === fixture.conversion_lead));
+    assert.ok(source.links.some((row) => row.link_doctype === "Prospect" && row.link_name === fixture.conversion_prospect));
+    assert.equal(source.links.filter((row) => row.link_doctype === "Customer" && row.link_name === convertedCustomer.name).length, 1,
+      `Native ${doctype} conversion retains the Lead/Prospect links and adds one Customer link`);
+  }
+  assert.equal((await call("all", "create_customer", conversionArgs)).replayed, true);
+  await call("all", "create_customer", { ...conversionArgs, request_key: "live-customer-converted-lead-duplicate",
+    customer_name: "MCP Duplicate Conversion" }, "CONFLICT");
+  const prospectCustomer = await call("all", "create_customer", { request_key: "live-customer-prospect-only",
+    customer_name: "MCP Prospect Only Customer", customer_group: "Commercial", territory: "New Zealand",
+    prospect_name: fixture.prospect_only });
+  assert.equal(prospectCustomer.document.prospect_name, fixture.prospect_only);
+  assert.ok(!prospectCustomer.document.lead_name, "A Prospect link must not silently choose a Lead to convert");
+  assert.equal((await call("all", "get_document", { doctype: "Lead", name: fixture.prospect_only_lead })).status, "Lead");
+
   const createLead = { request_key: "live-lead-create-0001", first_name: "MCP", last_name: "Mobile Prospect",
     company_name: "MCP New Prospect Company", email_id: "mcp-mobile-prospect@example.invalid", territory: "New Zealand" };
   const leadCreated = await call("all", "create_lead", createLead);
@@ -513,8 +569,67 @@ try {
     items: [{ item_code: fixture.quote_items[1], qty: 1, uom: "Nos", rate: 22 }] });
   assert.equal(standalonePurchaseInvoice.document.docstatus, 0);
   assert.ok(!standalonePurchaseInvoice.document.items[0].po_detail);
+
+  // Submit only after the fixed balance and report assertions above. Native accounting
+  // effects are verified by voucher so they cannot change unrelated report fixtures.
+  const submitArgs = (doctype, doc, request_key) => ({ doctype, name: doc.name,
+    expected_modified: doc.modified, request_key, confirm_submission: true });
+  const quoteBeforeSubmit = await call("all", "get_document", { doctype: "Quotation", name: quote.name });
+  const quoteSubmission = submitArgs("Quotation", quoteBeforeSubmit, "live-submit-quotation-0001");
+  const deniedSubmissionCalls = upstreamCalls;
+  await call("readonly", "submit_document", quoteSubmission, "PERMISSION_DENIED");
+  await call("restricted", "submit_document", quoteSubmission, "PERMISSION_DENIED");
+  assert.equal(upstreamCalls, deniedSubmissionCalls, "The separate submissions capability must gate native calls");
+  await call("nosubmit", "submit_document", { ...quoteSubmission, request_key: "live-submit-native-denied" }, "PERMISSION_DENIED");
+  assert.equal((await call("all", "get_document", { doctype: "Quotation", name: quote.name })).docstatus, 0,
+    "A Frappe user with read/write but no submit permission must leave the draft unchanged");
+  await call("all", "submit_document", { ...quoteSubmission, request_key: "live-submit-stale-quotation",
+    expected_modified: savedQuote.modified }, "CONFLICT");
+  const quoteSubmitPath = `/api/resource/Quotation/${encodeURIComponent(quote.name)}`;
+  const quoteWritesBefore = documentUpdates.filter((path) => path === quoteSubmitPath).length;
+  const submittedQuote = await call("all", "submit_document", quoteSubmission);
+  assert.equal(submittedQuote.document.docstatus, 1);
+  assert.equal(submittedQuote.document.grand_total, quoteBeforeSubmit.grand_total);
+  assert.deepEqual(submittedQuote.document.items.map((row) => [row.name, row.item_code, row.qty]),
+    quoteBeforeSubmit.items.map((row) => [row.name, row.item_code, row.qty]));
+  assert.equal((await call("all", "submit_document", quoteSubmission)).replayed, true);
+  assert.equal(documentUpdates.filter((path) => path === quoteSubmitPath).length, quoteWritesBefore + 1,
+    "A completed submission replay must never send a second PUT");
+
+  const orderBeforeSubmit = await call("all", "get_document", { doctype: "Sales Order", name: salesOrder.name });
+  const submittedOrder = await call("all", "submit_document", submitArgs("Sales Order", orderBeforeSubmit, "live-submit-sales-order-0001"));
+  assert.equal(submittedOrder.document.docstatus, 1);
+  assert.deepEqual(submittedOrder.document.items.map((row) => [row.name, row.qty, row.prevdoc_docname, row.quotation_item]),
+    orderBeforeSubmit.items.map((row) => [row.name, row.qty, row.prevdoc_docname, row.quotation_item]),
+    "Submitting a Sales Order must retain the exact quoted source line");
+  const invoiceBeforeSubmit = await call("all", "get_document", { doctype: "Purchase Invoice", name: purchaseInvoice.name });
+  const submittedInvoice = await call("all", "submit_document", submitArgs("Purchase Invoice", invoiceBeforeSubmit, "live-submit-purchase-invoice-0001"));
+  assert.equal(submittedInvoice.document.docstatus, 1);
+  assert.deepEqual(submittedInvoice.document.items.map((row) => [row.name, row.qty, row.purchase_order, row.po_detail]),
+    invoiceBeforeSubmit.items.map((row) => [row.name, row.qty, row.purchase_order, row.po_detail]),
+    "Submitting a Purchase Invoice must retain the exact ordered source line");
+  const ledgerQuery = new URLSearchParams({ fields: JSON.stringify(["name", "company", "voucher_type", "voucher_no", "account", "debit", "credit", "is_cancelled"]),
+    filters: JSON.stringify([["company", "=", company], ["voucher_type", "=", "Purchase Invoice"],
+      ["voucher_no", "=", purchaseInvoice.name], ["is_cancelled", "=", 0]]), limit_page_length: "50" });
+  const invoiceEntries = await backendRequest("all", `/api/resource/GL%20Entry?${ledgerQuery}`);
+  assert.ok(invoiceEntries.length >= 2 && invoiceEntries.length < 50,
+    "Native Purchase Invoice submission must create a complete, bounded set of ledger entries");
+  assert.ok(invoiceEntries.every((row) => row.company === company && row.voucher_type === "Purchase Invoice"
+    && row.voucher_no === purchaseInvoice.name && row.is_cancelled === 0));
+  assert.equal(Math.round(invoiceEntries.reduce((sum, row) => sum + (row.debit || 0), 0) * 100) / 100, submittedInvoice.document.grand_total);
+  assert.equal(Math.round(invoiceEntries.reduce((sum, row) => sum + (row.credit || 0), 0) * 100) / 100, submittedInvoice.document.grand_total);
+
+  await backendRequest("workflow_admin", `/api/resource/Workflow/${encodeURIComponent(fixture.submission_workflow)}`,
+    { method: "PUT", body: { is_active: 1 } });
+  const workflowQuote = await call("all", "get_document", { doctype: "Quotation", name: recipientQuote.name });
+  const workflowQuotePath = `/api/resource/Quotation/${encodeURIComponent(workflowQuote.name)}`;
+  const workflowWritesBefore = documentUpdates.filter((path) => path === workflowQuotePath).length;
+  await call("all", "submit_document", submitArgs("Quotation", workflowQuote, "live-submit-workflow-refused"), "WORKFLOW_REQUIRED");
+  assert.equal(documentUpdates.filter((path) => path === workflowQuotePath).length, workflowWritesBefore,
+    "An active approval workflow must be rejected before the submit mutation");
+  assert.equal((await call("all", "get_document", { doctype: "Quotation", name: workflowQuote.name })).docstatus, 0);
   assert.ok(upstreamCalls > checks, "Tool calls must reach live Frappe");
-  console.log(`${checks} live Frappe tool checks passed (accuracy, prices, draft writes, source line links, replay, permissions).`);
+  console.log(`${checks} live Frappe tool checks passed (accuracy, CRM links, draft writes, native submissions, source line links, replay, permissions, workflows).`);
 } finally {
   await mf.dispose();
 }

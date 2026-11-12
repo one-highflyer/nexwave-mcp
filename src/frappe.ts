@@ -1,4 +1,4 @@
-import type { NexWaveAuthProps, NexWaveOAuthAuthProps } from "./types";
+import type { NexWaveAuthProps, NexWaveOAuthAuthProps, SubmittableDoctype } from "./types";
 import { ToolError } from "./tool-result";
 
 export const UPSTREAM_TIMEOUT_MS = 8_000;
@@ -152,6 +152,37 @@ export async function frappeWrite(
   if (!isRecord(response.data) || typeof response.data.name !== "string" || !response.data.name
     || response.data.docstatus !== 0 || (name !== undefined && response.data.name !== name)) {
     throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The write result could not be confirmed. Check the document before trying another request.");
+  }
+  return response.data;
+}
+
+/** Form metadata exposes active workflows without requiring global Workflow read access. */
+export async function assertDirectSubmissionAllowed(props: NexWaveAuthProps, doctype: SubmittableDoctype): Promise<void> {
+  const url = new URL("/api/method/frappe.desk.form.load.getdoctype", props.baseUrl);
+  url.searchParams.set("doctype", doctype);
+  url.searchParams.set("with_parent", "0");
+  const response = await frappeFetch<{ docs?: unknown }>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
+  const matches = Array.isArray(response.docs)
+    ? response.docs.filter((row) => isRecord(row) && row.doctype === "DocType" && row.name === doctype) : [];
+  const meta = matches.length === 1 ? matches[0] as Record<string, unknown> : undefined;
+  if (!meta || meta.is_submittable !== 1 || !Array.isArray(meta.__workflow_docs)) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "Submission and workflow settings could not be confirmed. Use the normal NexWave form.");
+  }
+  // Native direct submission does not establish that workflow transitions were approved.
+  if (meta.__workflow_docs.length) {
+    throw new ToolError("WORKFLOW_REQUIRED", "This document type has an active approval workflow. Use the normal NexWave workflow to submit it.");
+  }
+}
+
+/** Submit the canonical server document. Never send permission-filtered fields back as edits. */
+export async function frappeSubmitDocument(props: NexWaveAuthProps, doctype: SubmittableDoctype, name: string, modified: string): Promise<Record<string, unknown>> {
+  const url = new URL(`/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, props.baseUrl);
+  const response = await frappeFetchAttempt<FrappeEnvelope<Record<string, unknown>>>(url.toString(), upstreamAuthorization(props), {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ docstatus: 1, modified }),
+  }, remainingTime(props), crypto.randomUUID(), 1);
+  if (!isRecord(response.data) || response.data.name !== name || response.data.doctype !== doctype || response.data.docstatus !== 1) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The submission result could not be confirmed. Read the document before another attempt.");
   }
   return response.data;
 }

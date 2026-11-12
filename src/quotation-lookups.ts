@@ -25,6 +25,7 @@ const SEARCH = {
 // Document fields only. Template child rows are handled by documentDetails.
 export const QUOTATION_READABLE_DOCTYPES = {
   Lead: ["name", "lead_name", "first_name", "last_name", "company_name", "email_id", "phone", "mobile_no", "status", "company", "territory", "disabled"],
+  Prospect: ["name", "company_name", "company", "customer_group", "territory", "industry", "prospect_owner", "website"],
   Quotation: ["name", "modified", "company", "quotation_to", "party_name", "customer_name", "transaction_date", "valid_till", "status", "docstatus", "currency", "selling_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "total", "net_total", "total_taxes_and_charges", "grand_total", "rounded_total", "discount_amount", "additional_discount_percentage", "apply_discount_on", "taxes_and_charges", "tax_category", "payment_terms_template", "tc_name", "terms", "customer_address", "contact_person", "contact_display", "contact_email", "contact_mobile", "address_display", "shipping_address_name", "shipping_address", "letter_head"],
   "Item Price": ["name", "item_code", "item_name", "price_list", "customer", "supplier", "buying", "selling", "currency", "uom", "price_list_rate", "valid_from", "valid_upto", "batch_no", "packing_unit", "lead_time_days"],
   "Price List": ["name", "price_list_name", "buying", "selling", "enabled", "currency", "price_not_uom_dependent"],
@@ -75,6 +76,14 @@ export function registerQuotationLookups(server: McpServer, currentProps: () => 
     email_id: z.string().trim().email().max(254).optional(), include_disabled: z.boolean().default(false),
   }, (input) => [...exactFilters("Lead", input, ["company", "status", "email_id"]), ...(!input.include_disabled ? [["Lead", "disabled", "=", 0]] : [])],
   "Find existing leads before creating another prospect. Confirm a candidate before using its exact ID in a quotation.");
+
+  registerLookup("list_prospects", "Prospect", ["name", "company_name"], {
+    company: ID.optional(), lead_name: ID.optional(), customer_group: ID.optional(), territory: ID.optional(),
+  }, (input) => {
+    if (input.lead_name && input.summary) throw new ToolError("INVALID_ARGUMENT", "Prospect counts with Lead membership filters are not supported. List and confirm the matching Prospects instead.");
+    return [...exactFilters("Prospect", input, ["company", "customer_group", "territory"]),
+      ...(input.lead_name ? [["Prospect Lead", "lead", "=", input.lead_name]] : [])];
+  }, "Find existing Prospects visible to the signed-in user. lead_name filters exact native Lead membership; count summaries are not supported with that filter. Confirm an exact Prospect ID before linking a new Customer. Use get_document for its Lead links.");
 
   registerLookup("list_quotations", "Quotation", ["name", "customer_name", "party_name"], {
     company: ID.optional(), quotation_to: z.enum(["Customer", "Lead"]).optional(), party_name: ID.optional(),

@@ -2,6 +2,17 @@ import { describe, expect, it } from "vitest";
 import { createNexWaveServer } from "../src/mcp";
 
 describe("MCP tool catalogue", () => {
+  it("requires an explicit confirmation and restricts document submission types", () => {
+    const schema = createNexWaveServer().toolInputSchemaJson("submit_document") as {
+      properties: Record<string, { enum?: string[]; const?: boolean }>;
+      required: string[]; additionalProperties: boolean;
+    };
+    expect(schema.properties.doctype.enum).toEqual(["Quotation", "Sales Order", "Purchase Invoice"]);
+    expect(schema.properties.confirm_submission.const).toBe(true);
+    expect(schema.required).toEqual(expect.arrayContaining(["doctype", "name", "expected_modified", "request_key", "confirm_submission"]));
+    expect(schema.additionalProperties).toBe(false);
+  });
+
   it("registers order, invoice, payment, bank transaction, and bank reconciliation tools", () => {
     const server = createNexWaveServer();
 
@@ -20,6 +31,8 @@ describe("MCP tool catalogue", () => {
       "update_draft_sales_order",
       "create_draft_purchase_invoice",
       "update_draft_purchase_invoice",
+      "list_prospects",
+      "submit_document",
     ]) {
       expect(server.toolInputSchemaJson(name), name).toBeDefined();
     }

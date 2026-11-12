@@ -125,6 +125,31 @@ def run():
     lead = frappe.get_doc({"doctype": "Lead", "first_name": "MCP", "last_name": "Seed Prospect",
         "company_name": "MCP Prospect Company", "email_id": "mcp-seed-prospect@example.invalid",
         "company": "MCP Alpha"}).insert()
+
+    # Conversion fixtures are independent of quote recipients and accounting balances.
+    def crm_lead(label, company="MCP Alpha"):
+        return frappe.get_doc({"doctype": "Lead", "first_name": f"MCP {label}",
+            "company_name": f"MCP {label} Organisation", "company": company,
+            "email_id": f"mcp-{label.lower().replace(' ', '-')}@example.invalid"}).insert()
+
+    conversion_lead = crm_lead("Conversion")
+    prospect_only_lead = crm_lead("Prospect Only")
+    ambiguous_lead = crm_lead("Ambiguous")
+    hidden_lead = crm_lead("Hidden Source", "MCP Hidden")
+    conversion_contact = frappe.get_doc({"doctype": "Contact", "first_name": "MCP Source Contact",
+        "email_ids": [{"email_id": "mcp-source-contact@example.invalid", "is_primary": 1}],
+        "links": [{"link_doctype": "Lead", "link_name": conversion_lead.name}]}).insert()
+    conversion_address = frappe.get_doc({"doctype": "Address", "address_title": "MCP Source Address",
+        "address_type": "Billing", "address_line1": "8 Synthetic Street", "city": "Auckland",
+        "country": "New Zealand", "links": [{"link_doctype": "Lead", "link_name": conversion_lead.name}]}).insert()
+
+    def prospect(label, source_lead):
+        return frappe.get_doc({"doctype": "Prospect", "company_name": f"MCP {label}",
+            "company": "MCP Alpha", "leads": [{"lead": source_lead.name}]}).insert()
+
+    conversion_prospect = prospect("Conversion Prospect", conversion_lead)
+    prospect_only = prospect("Prospect Only Organisation", prospect_only_lead)
+    ambiguous_prospects = [prospect(f"Ambiguous Prospect {index}", ambiguous_lead) for index in (1, 2)]
     alpha = companies["MCP Alpha"]
     tax_account = frappe.get_doc({"doctype": "Account", "account_name": "MCP Output Tax",
         "company": alpha.name, "parent_account": frappe.db.get_value("Account", alpha.default_payable_account, "parent_account"),
@@ -182,13 +207,34 @@ def run():
                 "schedule_date": "2025-01-20", "expense_account": alpha.default_expense_account,
                 "cost_center": alpha.cost_center}]}).insert()
     source_purchase_order.submit()
+
+    # An inactive workflow keeps normal submit tests possible. Activate it only after
+    # successful submissions to prove the MCP refuses to bypass an approval workflow.
+    for state in ("MCP Draft", "MCP Approved"):
+        frappe.get_doc({"doctype": "Workflow State", "workflow_state_name": state}).insert()
+    frappe.get_doc({"doctype": "Workflow Action Master", "workflow_action_name": "MCP Approve"}).insert()
+    submission_workflow = frappe.get_doc({"doctype": "Workflow", "workflow_name": "MCP Quote Approval",
+        "document_type": "Quotation", "is_active": 0, "workflow_state_field": "workflow_state",
+        "states": [{"state": "MCP Draft", "doc_status": "0", "allow_edit": "Sales Manager"},
+            {"state": "MCP Approved", "doc_status": "1", "allow_edit": "Sales Manager"}],
+        "transitions": [{"state": "MCP Draft", "action": "MCP Approve", "next_state": "MCP Approved",
+            "allowed": "Sales Manager", "allow_self_approval": 0}]}).insert()
+
+    from frappe.permissions import add_permission, update_permission_property
+    draft_editor = frappe.get_doc({"doctype": "Role", "role_name": "MCP Draft Editor", "desk_access": 1}).insert()
+    for doctype in ("Quotation", "Sales Order", "Purchase Invoice"):
+        add_permission(doctype, draft_editor.name)
+        update_permission_property(doctype, draft_editor.name, 0, "write", 1)
+        update_permission_property(doctype, draft_editor.name, 0, "create", 1)
     credentials = {}
     # Item-wise Sales Register also needs UOM read access (Stock User).
     # Master roles grant Item Price reads and party creation. Gateway capabilities are tested
     # separately from these Frappe role permissions, including a fully read-only connection.
     reader_roles = ["Accounts User", "Accounts Manager", "Stock User", "Sales User",
         "Sales Master Manager", "Purchase User", "Purchase Master Manager"]
-    for role_name, roles in (("all", reader_roles), ("restricted", reader_roles), ("readonly", reader_roles), ("denied", [])):
+    for role_name, roles in (("all", reader_roles), ("restricted", reader_roles), ("readonly", reader_roles),
+            ("denied", []), ("nosubmit", [draft_editor.name]), ("crm_restricted", reader_roles),
+            ("workflow_admin", ["System Manager"])):
         user = frappe.get_doc({"doctype": "User", "email": f"mcp-{role_name}@example.invalid",
             "first_name": f"MCP {role_name}", "enabled": 1, "user_type": "System User", "send_welcome_email": 0,
             "roles": [{"role": role} for role in roles], "api_key": secrets.token_hex(16), "api_secret": secrets.token_hex(16)}).insert()
@@ -196,8 +242,14 @@ def run():
         if role_name == "restricted":
             frappe.get_doc({"doctype": "User Permission", "user": user.name, "allow": "Company",
                 "for_value": "MCP Alpha", "apply_to_all_doctypes": 1}).insert()
+        if role_name == "crm_restricted":
+            frappe.get_doc({"doctype": "User Permission", "user": user.name, "allow": "Lead",
+                "for_value": conversion_lead.name, "apply_to_all_doctypes": 1}).insert()
     frappe.db.commit()
     frappe.clear_cache()
+    assert frappe.has_permission("Quotation", "write", user=credentials["nosubmit"]["user"])
+    assert not frappe.has_permission("Quotation", "submit", user=credentials["nosubmit"]["user"])
+    workflow_admin = credentials.pop("workflow_admin")
     manifest = {"credentials": credentials, "sales": sales.name, "usd": usd.name, "future": future.name,
         "credit": credit.name, "draft": draft.name, "hidden": hidden.name, "purchase": purchase.name,
         "purchase_usd": purchase_usd.name, "received": received.name, "paid": paid.name,
@@ -212,7 +264,13 @@ def run():
         "source_quotation": source_quotation.name,
         "source_quotation_rows": [row.name for row in source_quotation.items],
         "source_purchase_order": source_purchase_order.name,
-        "source_purchase_order_rows": [row.name for row in source_purchase_order.items]}
+        "source_purchase_order_rows": [row.name for row in source_purchase_order.items],
+        "conversion_lead": conversion_lead.name, "conversion_prospect": conversion_prospect.name,
+        "conversion_contact": conversion_contact.name, "conversion_address": conversion_address.name,
+        "prospect_only": prospect_only.name, "prospect_only_lead": prospect_only_lead.name,
+        "ambiguous_lead": ambiguous_lead.name,
+        "ambiguous_prospects": [doc.name for doc in ambiguous_prospects], "hidden_lead": hidden_lead.name,
+        "submission_workflow": submission_workflow.name, "workflow_admin": workflow_admin}
     output = Path(frappe.get_site_path("..", "live-fixtures.json")).resolve()
     output.write_text(json.dumps(manifest))
     output.chmod(0o600)

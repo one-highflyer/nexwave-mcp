@@ -7,6 +7,7 @@ import { sha256 } from "./security";
 import { requireWriteAccess } from "./write-access";
 import type { Env, NexWaveAuthProps, WriteCapability } from "./types";
 import { documentDetails } from "./document-details";
+import { resolveCustomerLinks } from "./customer-links";
 
 const ID = z.string().trim().min(1).max(140);
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => !Number.isNaN(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value, "Use a valid date.");
@@ -44,6 +45,8 @@ const CREATE_CUSTOMER = z.strictObject({
   default_currency: ID.optional(), default_price_list: ID.optional(), payment_terms: ID.optional(),
   email_id: z.email().max(254).optional(), mobile_no: z.string().trim().min(1).max(40).optional(),
   first_name: ID.optional(), last_name: ID.optional(),
+  lead_name: ID.optional().describe("Exact readable Lead ID to convert and retain on the Customer. Existing linked Contacts and Addresses are retained through normal NexWave permissions."),
+  prospect_name: ID.optional().describe("Exact readable Prospect ID. With a Lead, it must contain that Lead. Omit to retain its one unambiguous visible Prospect automatically; ambiguous matches require confirmation."),
 });
 
 export function registerQuotationWrites(server: McpServer, currentProps: () => Promise<NexWaveAuthProps>, env?: Env) {
@@ -51,7 +54,7 @@ export function registerQuotationWrites(server: McpServer, currentProps: () => P
     ["create_draft_quotation", "Create one draft quotation addressed to an existing Customer or Lead. Omitted rates use NexWave pricing; returns saved totals. Never submits or sends email.", CREATE_QUOTE],
     ["update_draft_quotation", "Update one draft quotation using expected_modified. Supplying items replaces all item rows. For price list, currency or transaction-date changes, supply the full items array to recalculate rates. Never submits or sends email.", UPDATE_QUOTE],
     ["create_lead", "Create one Lead after checking list_leads for duplicates. Quotes may be addressed to Leads without creating Customers.", CREATE_LEAD],
-    ["create_customer", "Create one Customer after checking list_customers for duplicates. Optional email/mobile/name fields use NexWave's normal primary Contact creation and permissions. Does not create addresses.", CREATE_CUSTOMER],
+    ["create_customer", "Create one Customer after checking list_customers for duplicates. Optional lead_name/prospect_name preserve CRM links; a linked Lead is converted and its existing Contacts and Addresses are linked through normal NexWave permissions. Prospect-only creation does not select or convert a Lead. Optional contact fields follow native behavior and do not create a new Contact when converting a Lead. Does not create addresses.", CREATE_CUSTOMER],
   ] as const;
   for (const [name, description, schema] of tools) {
     registerWriteTool(server, name, { description, inputSchema: schema }, async (input) => {
@@ -125,6 +128,10 @@ export async function executeWrite(env: Env | undefined, props: NexWaveAuthProps
     const orFilters = doctype === "Customer" && values.email_id ? [[doctype, "customer_name", "=", values.customer_name], [doctype, "email_id", "=", values.email_id]] : [];
     const matches = await frappeList<Record<string, unknown>>(props, doctype, ["name", ...fields], { filters: orFilters.length ? [] : filters, orFilters, limit: 1 });
     if (matches.length) throw new ToolError("CONFLICT", "A matching party already exists. Use the list tool to confirm its record ID before creating another.");
+    if (doctype === "Customer") Object.assign(patch, await resolveCustomerLinks(props, {
+      ...(typeof values.lead_name === "string" ? { lead_name: values.lead_name } : {}),
+      ...(typeof values.prospect_name === "string" ? { prospect_name: values.prospect_name } : {}),
+    }));
   }
   // A selected payment template must be readable before Frappe copies its schedule.
   if (values.payment_terms_template) await frappeGet(props, "Payment Terms Template", String(values.payment_terms_template));
@@ -135,6 +142,9 @@ export async function executeWrite(env: Env | undefined, props: NexWaveAuthProps
   if (reservation.meta.changes !== 1) throw uncertain();
   try {
     const saved = await frappeWrite(props, doctype, patch, existingName);
+    if (doctype === "Customer" && ["lead_name", "prospect_name"].some((field) => patch[field] && saved[field] !== patch[field])) {
+      throw new ToolError("WRITE_OUTCOME_UNKNOWN", "The Customer was saved but its requested source links could not be confirmed. Check NexWave before another attempt.");
+    }
     await trustedEnv.NEXWAVE_MCP_DB.prepare("UPDATE write_requests SET state = 'complete', document_name = ? WHERE site_id = ? AND user_id = ? AND operation = ? AND request_key = ?")
       .bind(saved.name, ...bindings).run();
     return writeResult(doctype, saved, false);
@@ -178,7 +188,7 @@ async function templateTerms(props: NexWaveAuthProps, name: string) {
   // Frappe renders the selected template with the document context before print.
   return "";
 }
-const DOCUMENT_FIELDS = ["name", "modified", "docstatus", "status", "company", "quotation_to", "party_name", "customer_name", "customer_type", "customer_group", "territory", "first_name", "last_name", "company_name", "email_id", "mobile_no", "transaction_date", "valid_till", "selling_price_list", "currency", "conversion_rate", "net_total", "total", "total_taxes_and_charges", "grand_total", "rounded_total", "discount_amount", "taxes_and_charges", "payment_terms_template", "tc_name", "contact_person", "contact_display", "contact_email", "contact_mobile", "customer_address", "address_display", "shipping_address_name", "shipping_address"];
+const DOCUMENT_FIELDS = ["name", "modified", "docstatus", "status", "company", "quotation_to", "party_name", "customer_name", "customer_type", "customer_group", "territory", "first_name", "last_name", "company_name", "email_id", "mobile_no", "lead_name", "prospect_name", "customer_primary_contact", "customer_primary_address", "transaction_date", "valid_till", "selling_price_list", "currency", "conversion_rate", "net_total", "total", "total_taxes_and_charges", "grand_total", "rounded_total", "discount_amount", "taxes_and_charges", "payment_terms_template", "tc_name", "contact_person", "contact_display", "contact_email", "contact_mobile", "customer_address", "address_display", "shipping_address_name", "shipping_address"];
 function writeResult(doctype: string, value: Record<string, unknown>, replayed: boolean) {
   const document = selectRecord(value, DOCUMENT_FIELDS);
   Object.assign(document, documentDetails(doctype, value, 0, 50));
