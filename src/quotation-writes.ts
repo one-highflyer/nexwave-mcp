@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { frappeAddressDisplay, frappeGet, frappeList, frappeWrite } from "./frappe";
 import { registerWriteTool } from "./tool-contract";
-import { structuredResult, ToolError } from "./tool-result";
+import { invalidWriteArguments, structuredResult, ToolError } from "./tool-result";
 import { sha256 } from "./security";
 import { requireWriteAccess } from "./write-access";
 import type { Env, NexWaveAuthProps, WriteCapability } from "./types";
@@ -73,7 +73,7 @@ type WriteOperation = "create_draft_quotation" | "update_draft_quotation" | "cre
 export async function executeWrite(env: Env | undefined, props: NexWaveAuthProps, operation: WriteOperation, raw: unknown) {
   const schema = { create_draft_quotation: CREATE_QUOTE, update_draft_quotation: UPDATE_QUOTE, create_lead: CREATE_LEAD, create_customer: CREATE_CUSTOMER }[operation];
   const parsed = schema.safeParse(raw);
-  if (!parsed.success) throw new ToolError("INVALID_ARGUMENT", "The write arguments are invalid. Check the tool schema and required fields.");
+  if (!parsed.success) throw invalidWriteArguments(parsed.error.issues);
   const input = parsed.data as Record<string, unknown> & { request_key: string };
   const capability: WriteCapability = operation.includes("quotation") ? "quotations" : operation === "create_lead" ? "leads" : "customers";
   const trustedEnv = await requireWriteAccess(env, props, capability);

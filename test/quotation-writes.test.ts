@@ -50,6 +50,19 @@ function upstream() {
 }
 
 describe("write access", () => {
+  it.each([
+    ["create_customer", { request_key: "invalid-customer-fields", customer_name: "", email_id: "private-invalid-email", private_key: "private-secret" }, "customer_name"],
+    ["create_lead", { request_key: "invalid-lead-fields", first_name: "", email_id: "private-invalid-email" }, "first_name"],
+    ["create_draft_quotation", { ...create, company: "", items: [{ item_code: "", qty: 0 }] }, "items[0].item_code"],
+  ] as const)("names invalid required %s inputs without echoing their values", async (operation, input, path) => {
+    const mock = upstream(); const ctx = environment();
+    const pending = executeWrite(ctx.env, props, operation, input);
+    await expect(pending).rejects.toThrow(path);
+    await expect(pending).rejects.not.toThrow("private-");
+    await expect(pending).rejects.not.toThrow("private_key");
+    expect(mock).not.toHaveBeenCalled(); expect(ctx.reservations.size).toBe(0);
+  });
+
   it("defaults legacy connections to read-only", async () => {
     const mock = upstream();
     await expect(executeWrite(environment().env, { ...props, writeCapabilities: undefined }, "create_draft_quotation", create)).rejects.toThrow("PERMISSION_DENIED");

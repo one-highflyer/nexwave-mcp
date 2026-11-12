@@ -1,7 +1,66 @@
 import { describe, expect, it } from "vitest";
 import { createNexWaveServer } from "../src/mcp";
 
+type InputSchema = {
+  properties: Record<string, InputSchema>;
+  required?: string[];
+  items?: InputSchema;
+  anyOf?: InputSchema[];
+  const?: unknown;
+  default?: unknown;
+  additionalProperties?: boolean;
+};
+
 describe("MCP tool catalogue", () => {
+  it("publishes required Sales Order header and line dates for creates and new update rows", () => {
+    const server = createNexWaveServer();
+    const create = server.toolInputSchemaJson("create_draft_sales_order") as InputSchema;
+    const update = server.toolInputSchemaJson("update_draft_sales_order") as InputSchema;
+    expect(create.required).toContain("delivery_date");
+    expect(create.properties.items.items?.required).toEqual(expect.arrayContaining(["item_code", "qty", "delivery_date"]));
+    expect(update.required).toEqual(expect.arrayContaining(["request_key", "name", "expected_modified"]));
+    expect(update.required).not.toContain("delivery_date");
+    expect(update.required).not.toContain("items");
+    const branches = update.properties.items.items?.anyOf ?? [];
+    expect(branches).toHaveLength(2);
+    const existing = branches.find((branch) => branch.required?.includes("name"));
+    const added = branches.find((branch) => branch.properties.new_item?.const === true);
+    expect(existing?.required).toEqual(expect.arrayContaining(["name", "item_code", "qty"]));
+    expect(existing?.required).not.toContain("delivery_date");
+    expect(added?.required).toEqual(expect.arrayContaining(["new_item", "item_code", "qty", "delivery_date"]));
+    expect(existing?.additionalProperties).toBe(false);
+    expect(added?.additionalProperties).toBe(false);
+  });
+
+  it.each([
+    ["create_draft_quotation", ["request_key", "company", "quotation_to", "party_name", "items"], ["transaction_date", "selling_price_list", "currency"]],
+    ["create_draft_sales_order", ["request_key", "company", "customer", "items", "delivery_date"], ["transaction_date", "selling_price_list", "currency"]],
+    ["create_draft_purchase_invoice", ["request_key", "company", "supplier", "items"], ["posting_date", "due_date", "buying_price_list", "currency"]],
+    ["create_customer", ["request_key", "customer_name"], ["customer_type", "customer_group", "territory"]],
+    ["create_lead", ["request_key", "first_name"], ["company_name", "territory", "source"]],
+  ])("keeps required business inputs and optional native defaults clear for %s", (name, required, optional) => {
+    const schema = createNexWaveServer().toolInputSchemaJson(name) as InputSchema;
+    expect(schema.required).toEqual(expect.arrayContaining(required));
+    for (const field of optional) {
+      expect(schema.properties, field).toHaveProperty(field);
+      expect(schema.required, field).not.toContain(field);
+    }
+    expect(schema.additionalProperties).toBe(false);
+    for (const field of ["naming_series", "status", "conversion_rate", "price_list_currency", "plc_conversion_rate", "credit_to"]) {
+      expect(schema.properties, field).not.toHaveProperty(field);
+    }
+    if (schema.properties.items) {
+      const item = schema.properties.items.items!;
+      expect(item.required).toEqual(expect.arrayContaining(["item_code", "qty"]));
+      expect(item.required).not.toContain("uom");
+      expect(item.required).not.toContain("rate");
+      for (const field of ["item_name", "conversion_factor", "stock_qty", "amount", "base_rate", "base_amount"]) {
+        expect(item.properties, field).not.toHaveProperty(field);
+      }
+    }
+    if (name === "create_customer") expect(schema.properties.customer_type.default).toBe("Company");
+  });
+
   it("requires an explicit confirmation and restricts document submission types", () => {
     const schema = createNexWaveServer().toolInputSchemaJson("submit_document") as {
       properties: Record<string, { enum?: string[]; const?: boolean }>;

@@ -1,5 +1,6 @@
 import type { NexWaveAuthProps, NexWaveOAuthAuthProps, SubmittableDoctype } from "./types";
 import { ToolError } from "./tool-result";
+import { mandatoryValidationMessage } from "./validation-errors";
 
 export const UPSTREAM_TIMEOUT_MS = 8_000;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -391,7 +392,13 @@ async function frappeFetchAttempt<T>(
     });
     status = response.status;
     if (!response.ok) {
-      await response.body?.cancel();
+      let mandatoryMessage: string | undefined;
+      const resource = new URL(url).pathname.match(/^\/api\/resource\/([^/]+)(?:\/[^/]+)?$/);
+      const writeDoctype = resource ? decodeURIComponent(resource[1]) : "";
+      if ([417, 422].includes(response.status) && ["POST", "PUT"].includes(init.method ?? "") && ["Quotation", "Sales Order", "Purchase Invoice", "Customer", "Lead"].includes(writeDoctype)) {
+        try { mandatoryMessage = mandatoryValidationMessage(await readBoundedJson(response, 16 * 1024), writeDoctype); }
+        catch { /* Error bodies may be missing, private, malformed or too large. */ }
+      } else await response.body?.cancel();
       if (response.status >= 300 && response.status < 400) {
         throw new ToolError("UPSTREAM_UNAVAILABLE", "NexWave returned a redirect. Check the registered site URL.");
       }
@@ -405,7 +412,7 @@ async function frappeFetchAttempt<T>(
         throw new ToolError("NOT_FOUND", "The requested NexWave resource was not found.");
       }
       if ([409, 417, 422].includes(response.status)) {
-        throw new ToolError("VALIDATION_FAILED", "NexWave rejected the values or the document changed. Read the current document and check required fields, dates, linked records and permissions.");
+        throw new ToolError("VALIDATION_FAILED", mandatoryMessage ?? "NexWave rejected the values or the document changed. Read the current document and check required fields, dates, linked records and permissions.");
       }
       throw new ToolError("UPSTREAM_UNAVAILABLE", `NexWave returned HTTP ${response.status}.`, response.status === 429 || response.status >= 500);
     }
@@ -426,7 +433,7 @@ async function frappeFetchAttempt<T>(
   }
 }
 
-async function readBoundedJson(response: Response): Promise<unknown> {
+async function readBoundedJson(response: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<unknown> {
   const reader = response.body?.getReader();
   if (!reader) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave returned an empty response.");
   const decoder = new TextDecoder();
@@ -437,7 +444,7 @@ async function readBoundedJson(response: Response): Promise<unknown> {
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
+      if (size > maxBytes) {
         await reader.cancel();
         throw new ToolError("RESULT_TOO_LARGE", "The result is too large. Use a narrower date range or more filters.");
       }
