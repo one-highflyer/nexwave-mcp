@@ -3,6 +3,8 @@ import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_ME
 import { mcpHandler } from "../src/mcp";
 import { handleServiceMcpRequest } from "../src/service-mcp";
 import { encryptSecret, sha256 } from "../src/security";
+import * as frappe from "../src/frappe";
+import { ToolError } from "../src/tool-result";
 import type { Env, NexWaveOAuthAuthProps, SiteRecord } from "../src/types";
 
 const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
@@ -61,6 +63,14 @@ it("logs the original failure before the service compatibility response hides is
   expect(payload.result.isError).toBe(false);
   expect(payload.result.structuredContent.ok).toBe(false);
   expect(usage()).toMatchObject([{ outcome: "error", error_code: "PERMISSION_DENIED" }]);
+});
+
+it.each<Mode>(["oauth", "api_token"])("retains the fixed workflow rejection code in %s usage logs", async (mode) => {
+  vi.spyOn(frappe, "frappeList").mockRejectedValue(new ToolError("WORKFLOW_REQUIRED", "Use the normal NexWave workflow."));
+  const { payload } = await request(mode, "tools/call", { name: "list_suppliers", arguments: {} });
+  expect(payload.result.isError).toBe(true);
+  expect(usage()).toMatchObject([{ outcome: "error", error_code: "WORKFLOW_REQUIRED", message: "MCP list_suppliers: error (WORKFLOW_REQUIRED)" }]);
+  expect(JSON.stringify(usage())).not.toMatch(/private-|Use the normal/);
 });
 
 it.each<Mode>(["oauth", "api_token"])("logs schema failures before tool execution for %s", async (mode) => {
