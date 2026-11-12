@@ -5,7 +5,7 @@ const METHODS = new Set(["initialize", "ping", "tools/list", "tools/call", "reso
 const ERROR_CODES = new Set([
   "INVALID_ARGUMENT", "AUTHENTICATION_REQUIRED", "NOT_FOUND", "PERMISSION_DENIED",
   "RESULT_TOO_LARGE", "UPSTREAM_INVALID_RESPONSE", "UPSTREAM_TIMEOUT", "UPSTREAM_UNAVAILABLE",
-  "CONFLICT", "VALIDATION_FAILED", "WRITE_OUTCOME_UNKNOWN",
+  "CONFLICT", "VALIDATION_FAILED", "WRITE_OUTCOME_UNKNOWN", "WORKFLOW_REQUIRED",
 ]);
 
 /** Observe protocol messages before service response conversion, without reading response streams. */

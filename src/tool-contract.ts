@@ -50,6 +50,6 @@ export function registerWriteTool(
   return server.registerTool(name, {
     ...config,
     outputSchema: z.union([z.object({ doctype: z.string(), name: z.string(), replayed: z.boolean(), document: ROW, note: z.string() }), FAILURE]).meta({ type: "object" }),
-    annotations: { readOnlyHint: false, destructiveHint: name.startsWith("update_"), idempotentHint: true },
+    annotations: { readOnlyHint: false, destructiveHint: name.startsWith("update_") || name === "submit_document", idempotentHint: true },
   }, handler);
 }

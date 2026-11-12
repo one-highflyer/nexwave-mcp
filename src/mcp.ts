@@ -15,6 +15,7 @@ import { registerReportTools } from "./report-tools";
 import { QUOTATION_READABLE_DOCTYPES, registerQuotationLookups } from "./quotation-lookups";
 import { registerQuotationWrites } from "./quotation-writes";
 import { registerTransactionWrites } from "./transaction-writes";
+import { registerSubmissionWrite } from "./submission-writes";
 import { registerPdfTool } from "./pdf-tool";
 import { SALES_INVOICE_STATUS, PURCHASE_INVOICE_STATUS, SALES_ORDER_STATUS, PURCHASE_ORDER_STATUS, DOCSTATUS, ORDER_DATES, statusSchema, dateFilters, invoiceFilters, orderFilters } from "./transaction-filters";
 import type { Env, NexWaveAuthProps } from "./types";
@@ -39,7 +40,7 @@ const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact doc
 const MANUFACTURING_LINK = z.string().trim().min(1).max(140).optional();
 
 const READABLE_DOCTYPES = {
-  Customer: ["name", "customer_name", "customer_group", "territory", "disabled", "customer_type", "default_currency", "default_price_list", "payment_terms", "tax_category", "customer_primary_contact", "customer_primary_address", "email_id", "mobile_no"],
+  Customer: ["name", "customer_name", "customer_group", "territory", "disabled", "customer_type", "default_currency", "default_price_list", "payment_terms", "tax_category", "customer_primary_contact", "customer_primary_address", "email_id", "mobile_no", "lead_name", "prospect_name"],
   Item: ["name", "item_name", "item_group", "stock_uom", "disabled", "sales_uom", "is_sales_item", "description"],
   ...QUOTATION_READABLE_DOCTYPES,
   "Sales Order": ["name", "company", "customer", "customer_name", "transaction_date", "delivery_date", "status", "currency", "grand_total", "base_grand_total"],
@@ -59,8 +60,8 @@ type ReadableDoctype = keyof typeof READABLE_DOCTYPES;
 const TRANSACTION_DOCUMENT_FIELDS: Partial<Record<ReadableDoctype, readonly string[]>> = {
   Quotation: ["order_type", "apply_discount_on", "additional_discount_percentage", "discount_amount"],
   "Purchase Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount"],
-  "Sales Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "order_type", "selling_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "shipping_address_name", "contact_person"],
-  "Purchase Invoice": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "bill_no", "bill_date", "buying_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "credit_to", "update_stock", "is_return", "return_against", "is_paid", "paid_amount", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "supplier_address", "shipping_address", "contact_person"],
+  "Sales Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "order_type", "selling_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "tax_category", "disable_rounded_total", "payment_terms_template", "tc_name", "terms", "customer_address", "shipping_address_name", "contact_person"],
+  "Purchase Invoice": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "bill_no", "bill_date", "buying_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "credit_to", "update_stock", "is_return", "return_against", "is_paid", "paid_amount", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "tax_category", "disable_rounded_total", "payment_terms_template", "tc_name", "terms", "supplier_address", "shipping_address", "contact_person"],
 };
 
 export function createNexWaveServer(env?: Env): McpServer {
@@ -470,7 +471,7 @@ export function createNexWaveServer(env?: Env): McpServer {
           "Work Order",
           "BOM",
           "Job Card",
-          "Lead", "Quotation", "Item Price", "Price List", "Sales Taxes and Charges Template",
+          "Lead", "Prospect", "Quotation", "Item Price", "Price List", "Sales Taxes and Charges Template",
           "Purchase Taxes and Charges Template", "Terms and Conditions", "Payment Terms Template",
         ]),
         name: z.string().trim().min(1).max(140),
@@ -491,6 +492,7 @@ export function createNexWaveServer(env?: Env): McpServer {
   registerQuotationLookups(server, currentProps);
   registerQuotationWrites(server, currentProps, env);
   registerTransactionWrites(server, currentProps, env);
+  registerSubmissionWrite(server, currentProps, env);
   registerPdfTool(server, currentProps);
 
   return withMcpUsageLogging(server);

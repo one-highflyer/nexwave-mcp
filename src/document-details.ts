@@ -1,8 +1,12 @@
 import { ToolError } from "./tool-result";
 
 const ITEM_FIELDS = ["name", "idx", "item_code", "item_name", "description", "qty", "uom", "stock_qty", "stock_uom", "conversion_factor", "rate", "amount", "base_rate", "base_amount", "net_rate", "net_amount", "warehouse", "delivery_date", "schedule_date", "received_qty", "delivered_qty", "sales_order", "sales_order_item", "purchase_order", "purchase_order_item", "delivery_note", "purchase_receipt"];
+const TAX_FIELDS = ["name", "idx", "charge_type", "row_id", "account_head", "description", "included_in_print_rate", "included_in_paid_amount", "rate", "tax_amount", "base_tax_amount", "tax_amount_after_discount_amount", "base_tax_amount_after_discount_amount", "total", "base_total", "cost_center"];
+const PAYMENT_SCHEDULE_FIELDS = ["name", "idx", "payment_term", "description", "due_date", "invoice_portion", "payment_amount", "base_payment_amount", "paid_amount", "outstanding", "mode_of_payment", "discount_type", "discount", "discount_date", "discount_amount"];
+const PRICING_FIELDS = ["price_list_rate", "discount_percentage", "discount_amount", "margin_type", "margin_rate_or_amount", "rate_with_margin", "base_rate_with_margin", "item_tax_template"];
 const REFERENCE_FIELDS = ["name", "idx", "reference_doctype", "reference_name", "due_date", "total_amount", "outstanding_amount", "allocated_amount", "exchange_rate", "account"];
 const TABLES: Record<string, Record<string, string[]>> = {
+  Prospect: { leads: ["name", "idx", "lead", "lead_name", "status", "email", "mobile_no"] },
   Quotation: {
     items: ITEM_FIELDS.concat(["price_list_rate", "discount_percentage", "discount_amount", "item_tax_template"]),
     taxes: ["name", "idx", "charge_type", "row_id", "account_head", "description", "included_in_print_rate", "rate", "tax_amount", "total", "cost_center"],
@@ -11,8 +15,18 @@ const TABLES: Record<string, Record<string, string[]>> = {
   "Sales Taxes and Charges Template": { taxes: ["charge_type", "row_id", "account_head", "description", "included_in_print_rate", "rate", "tax_amount", "cost_center"] },
   "Purchase Taxes and Charges Template": { taxes: ["charge_type", "row_id", "account_head", "description", "included_in_print_rate", "rate", "tax_amount", "cost_center", "category", "add_deduct_tax"] },
   "Payment Terms Template": { terms: ["payment_term", "description", "invoice_portion", "due_date_based_on", "credit_days", "credit_months", "discount_type", "discount", "discount_validity_based_on", "discount_validity"] },
-  "Sales Order": { items: ITEM_FIELDS.concat(["prevdoc_docname", "quotation_item"]) }, "Purchase Order": { items: ITEM_FIELDS },
-  "Sales Invoice": { items: ITEM_FIELDS }, "Purchase Invoice": { items: ITEM_FIELDS.concat(["po_detail", "pr_detail"]) },
+  "Sales Order": {
+    items: ITEM_FIELDS.concat(PRICING_FIELDS, ["prevdoc_docname", "quotation_item", "cost_center", "project"]),
+    taxes: TAX_FIELDS,
+    payment_schedule: PAYMENT_SCHEDULE_FIELDS,
+  },
+  "Purchase Order": { items: ITEM_FIELDS },
+  "Sales Invoice": { items: ITEM_FIELDS },
+  "Purchase Invoice": {
+    items: ITEM_FIELDS.concat(PRICING_FIELDS, ["po_detail", "pr_detail", "expense_account", "cost_center", "project", "is_fixed_asset", "asset", "asset_category"]),
+    taxes: TAX_FIELDS.concat(["category", "add_deduct_tax"]),
+    payment_schedule: PAYMENT_SCHEDULE_FIELDS,
+  },
   "Payment Entry": { references: REFERENCE_FIELDS },
   "Bank Transaction": { payment_entries: ["name", "idx", "payment_document", "payment_entry", "allocated_amount"] },
   "Work Order": {

@@ -4,9 +4,10 @@ const $ = (id) => document.getElementById(id);
 const capabilities = [
   { key: "quotations", title: "Quotations", description: "Create and update drafts" },
   { key: "leads", title: "Leads", description: "Create leads" },
-  { key: "customers", title: "Customers", description: "Create customers" },
+  { key: "customers", title: "Customers", description: "Create customers and retain CRM links" },
   { key: "sales_orders", title: "Sales orders", description: "Create and update drafts" },
   { key: "purchase_invoices", title: "Purchase invoices", description: "Create and update drafts" },
+  { key: "submissions", title: "Submit documents", description: "Submit approved drafts; matching write access required" },
 ];
 const token = () => $("admin-token").value.trim();
 const headers = () => ({ Authorization: "Bearer " + token(), "Content-Type": "application/json" });

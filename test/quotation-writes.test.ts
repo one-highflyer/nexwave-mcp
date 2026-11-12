@@ -292,3 +292,151 @@ describe("party creation", () => {
     expect(mock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
   });
 });
+
+describe("Customer CRM links", () => {
+  const customer = { request_key: "test-linked-customer", customer_name: "Example Linked Customer", lead_name: "LEAD-1" };
+  function sourceUpstream(options: {
+    lead?: Record<string, unknown>;
+    prospect?: Record<string, unknown>;
+    prospects?: string[];
+    existingCustomer?: boolean;
+    savedLinks?: Record<string, unknown>;
+  } = {}) {
+    let saved: Record<string, unknown>;
+    const mock = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = new URL(input);
+      const route = decodeURIComponent(url.pathname);
+      if (init?.method === "POST") {
+        saved = { ...JSON.parse(String(init.body)), name: "CUST-LINKED", docstatus: 0,
+          customer_primary_contact: "CONTACT-1", private_field: "not returned", ...options.savedLinks };
+        return Response.json({ data: saved });
+      }
+      if (route === "/api/resource/Customer/CUST-LINKED") return Response.json({ data: saved });
+      if (route === "/api/resource/Customer") {
+        const filters = JSON.parse(url.searchParams.get("filters") ?? "[]");
+        return Response.json({ data: options.existingCustomer && filters.some((row: unknown[]) => row[1] === "lead_name") ? [{ name: "CUST-EXISTING" }] : [] });
+      }
+      if (route === "/api/resource/Lead/LEAD-1") return Response.json({ data: { name: "LEAD-1", doctype: "Lead", status: "Open", disabled: 0, ...options.lead } });
+      if (route === "/api/resource/Prospect") return Response.json({ data: (options.prospects ?? ["PROSPECT-1"]).map((name) => ({ name })) });
+      if (route === "/api/resource/Prospect/PROSPECT-1") return Response.json({ data: { name: "PROSPECT-1", doctype: "Prospect", leads: [{ lead: "LEAD-1" }], ...options.prospect } });
+      throw new Error(`Unexpected test route: ${route}`);
+    });
+    vi.stubGlobal("fetch", mock);
+    return mock;
+  }
+
+  it("retains exact native Lead and Prospect links through one Customer insert and a replay", async () => {
+    const mock = sourceUpstream();
+    const ctx = environment();
+    const result = await executeWrite(ctx.env, props, "create_customer", customer);
+    expect(result.structuredContent).toMatchObject({ document: { lead_name: "LEAD-1", prospect_name: "PROSPECT-1", customer_primary_contact: "CONTACT-1" } });
+    expect(result.structuredContent.document).not.toHaveProperty("private_field");
+    const [, init] = mock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(JSON.parse(String(init?.body))).toMatchObject({ lead_name: "LEAD-1", prospect_name: "PROSPECT-1", customer_name: customer.customer_name });
+    expect(mock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(mock.mock.calls.every(([, init]) => init?.method !== "PUT")).toBe(true);
+    const discovery = mock.mock.calls.map(([input]) => new URL(input)).find((url) => decodeURIComponent(url.pathname) === "/api/resource/Prospect")!;
+    expect(JSON.parse(discovery.searchParams.get("filters")!)).toEqual([["Prospect Lead", "lead", "=", "LEAD-1"]]);
+    expect(discovery.searchParams.get("limit_page_length")).toBe("3");
+    mock.mockClear();
+    const replay = await executeWrite(ctx.env, props, "create_customer", customer);
+    expect(replay.structuredContent).toMatchObject({ replayed: true, document: { lead_name: "LEAD-1", prospect_name: "PROSPECT-1" } });
+    expect(mock).toHaveBeenCalledOnce();
+    expect(mock.mock.calls[0][0]).toContain("/Customer/CUST-LINKED");
+  });
+
+  it("deduplicates a repeated visible Prospect match without guessing a different source", async () => {
+    sourceUpstream({ prospects: ["PROSPECT-1", "PROSPECT-1"] });
+    const result = await executeWrite(environment().env, props, "create_customer", customer);
+    expect(result.structuredContent).toMatchObject({ document: { prospect_name: "PROSPECT-1" } });
+  });
+
+  it("allows a Lead without a linked Prospect", async () => {
+    const mock = sourceUpstream({ prospects: [] });
+    const result = await executeWrite(environment().env, props, "create_customer", customer);
+    expect(result.structuredContent).toMatchObject({ document: { lead_name: "LEAD-1" } });
+    const [, init] = mock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("prospect_name");
+  });
+
+  it("keeps a Prospect-only request without choosing or converting one of its Leads", async () => {
+    const mock = sourceUpstream({ prospect: { leads: [{ lead: "LEAD-1" }, { lead: "LEAD-2" }] } });
+    const result = await executeWrite(environment().env, props, "create_customer", {
+      request_key: "test-prospect-customer", customer_name: "Example Prospect Customer", prospect_name: "PROSPECT-1",
+    });
+    expect(result.structuredContent).toMatchObject({ document: { prospect_name: "PROSPECT-1" } });
+    const [, init] = mock.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("lead_name");
+    expect(mock.mock.calls.some(([input]) => input.includes("/Lead/"))).toBe(false);
+  });
+
+  it("accepts an explicitly confirmed Lead and Prospect without an automatic lookup", async () => {
+    const mock = sourceUpstream();
+    await executeWrite(environment().env, props, "create_customer", { ...customer, prospect_name: "PROSPECT-1" });
+    expect(mock.mock.calls.some(([input]) => new URL(input).pathname === "/api/resource/Prospect")).toBe(false);
+  });
+
+  it.each([
+    ["multiple matches", ["PROSPECT-1", "PROSPECT-2"]],
+    ["a full duplicate candidate page", ["PROSPECT-1", "PROSPECT-1", "PROSPECT-1"]],
+  ])("requires explicit confirmation for %s", async (_label, prospects) => {
+    const mock = sourceUpstream({ prospects });
+    const ctx = environment();
+    await expect(executeWrite(ctx.env, props, "create_customer", customer)).rejects.toThrow("CONFLICT");
+    expect(ctx.reservations.size).toBe(0);
+    expect(mock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it.each([
+    ["another Lead", { leads: [{ lead: "LEAD-2" }] }, "INVALID_ARGUMENT"],
+    ["an empty membership list", { leads: [] }, "INVALID_ARGUMENT"],
+    ["missing membership details", { leads: undefined }, "UPSTREAM_INVALID_RESPONSE"],
+    ["hidden Lead IDs", { leads: [{}] }, "UPSTREAM_INVALID_RESPONSE"],
+    ["a different source record", { name: "PROSPECT-OTHER" }, "UPSTREAM_INVALID_RESPONSE"],
+  ])("rejects %s before reserving or writing", async (_label, prospect, code) => {
+    const mock = sourceUpstream({ prospect });
+    const ctx = environment();
+    await expect(executeWrite(ctx.env, props, "create_customer", { ...customer, prospect_name: "PROSPECT-1" })).rejects.toThrow(code);
+    expect(ctx.reservations.size).toBe(0);
+    expect(mock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it.each([
+    [{ existingCustomer: true }, "CONFLICT"],
+    [{ lead: { status: "Converted" } }, "CONFLICT"],
+    [{ lead: { disabled: 1 } }, "INVALID_ARGUMENT"],
+    [{ lead: { name: "LEAD-OTHER" } }, "UPSTREAM_INVALID_RESPONSE"],
+  ])("rejects an existing, converted, disabled, or unexpected Lead", async (options, code) => {
+    const mock = sourceUpstream(options);
+    const ctx = environment();
+    await expect(executeWrite(ctx.env, props, "create_customer", customer)).rejects.toThrow(code);
+    expect(ctx.reservations.size).toBe(0);
+    expect(mock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it.each([["Lead", 403], ["Lead", 404], ["Prospect", 403], ["Prospect", 404]] as const)("preserves an inaccessible or missing %s source (%s) without leaking response content", async (doctype, status) => {
+    const mock = sourceUpstream();
+    const original = mock.getMockImplementation()!;
+    mock.mockImplementation(async (input, init) => input.includes(`/${doctype}/`)
+      ? new Response("private source response", { status }) : original(input, init));
+    const ctx = environment();
+    const pending = executeWrite(ctx.env, props, "create_customer", customer);
+    await expect(pending).rejects.toThrow(status === 403 ? "PERMISSION_DENIED" : "NOT_FOUND");
+    await expect(pending).rejects.not.toThrow("private source response");
+    expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("checks Customer write access before reading the selected sources", async () => {
+    const mock = sourceUpstream();
+    await expect(executeWrite(environment("[]").env, props, "create_customer", customer)).rejects.toThrow("PERMISSION_DENIED");
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("does not report success if the saved Customer drops or changes a requested source link", async () => {
+    const mock = sourceUpstream({ savedLinks: { prospect_name: "PROSPECT-OTHER" } });
+    const ctx = environment();
+    await expect(executeWrite(ctx.env, props, "create_customer", customer)).rejects.toThrow("WRITE_OUTCOME_UNKNOWN");
+    expect([...ctx.reservations.values()][0].state).toBe("unknown");
+    expect(mock.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+});

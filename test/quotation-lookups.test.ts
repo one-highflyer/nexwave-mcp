@@ -73,6 +73,7 @@ describe("quotation lookup tools", () => {
     ["list_quotations", { party_name: "CUS-001" }],
     ["list_quotations", { from_date: "2026-06-30", to_date: "2026-06-01" }],
     ["list_quotations", { to_date: "2026-02-30" }],
+    ["list_prospects", { lead_name: "LEAD-1", summary: "count" }],
   ])("rejects invalid %s filters before authentication or upstream requests", async (tool, input) => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -97,6 +98,20 @@ describe("quotation lookup tools", () => {
     expect(query(fetchMock).filters).toEqual(expect.arrayContaining([
       ["Lead", "email_id", "=", "prospect@example.com"], ["Lead", "status", "=", "Open"], ["Lead", "disabled", "=", 0],
     ]));
+  });
+
+  it("finds Prospects by exact native Lead membership without inventing a Lead field on the parent", async () => {
+    const fetchMock = vi.fn(async (_input: string) => Response.json({ data: [{ name: "PROSPECT-1", company_name: "Example Prospect" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await invoke("list_prospects", { lead_name: "LEAD-1", company: "Example Company", customer_group: "Commercial", territory: "Example Territory" });
+    expect(decodeURIComponent(new URL(String(fetchMock.mock.calls[0][0])).pathname)).toBe("/api/resource/Prospect");
+    expect(query(fetchMock).filters).toEqual(expect.arrayContaining([
+      ["Prospect Lead", "lead", "=", "LEAD-1"], ["Prospect", "company", "=", "Example Company"],
+      ["Prospect", "customer_group", "=", "Commercial"], ["Prospect", "territory", "=", "Example Territory"],
+    ]));
+    expect(query(fetchMock).fields).not.toContain("lead_name");
+    expect(query(fetchMock).fields).not.toContain("disabled");
+    expect(result.structuredContent).toMatchObject({ records: [{ name: "PROSPECT-1" }] });
   });
 
   it("filters quotations by the exact party type and transaction date", async () => {
@@ -140,7 +155,7 @@ describe("quotation lookup tools", () => {
     expect(result.content[1].text).toContain("Narrow search");
   });
 
-  it.each(["list_item_prices", "list_price_lists", "list_leads", "list_quotations", "list_payment_terms_templates"])("bounds %s list size before any upstream request", async (tool) => {
+  it.each(["list_item_prices", "list_price_lists", "list_leads", "list_prospects", "list_quotations", "list_payment_terms_templates"])("bounds %s list size before any upstream request", async (tool) => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     await expect(invoke(tool, { limit: 51 })).rejects.toThrow();

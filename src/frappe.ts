@@ -1,4 +1,4 @@
-import type { NexWaveAuthProps, NexWaveOAuthAuthProps } from "./types";
+import type { NexWaveAuthProps, NexWaveOAuthAuthProps, SubmittableDoctype } from "./types";
 import { ToolError } from "./tool-result";
 
 export const UPSTREAM_TIMEOUT_MS = 8_000;
@@ -156,7 +156,53 @@ export async function frappeWrite(
   return response.data;
 }
 
-/** Fixed native conversions only. A caller must verify source access and reserve the write first. */
+/** Form metadata exposes active workflows without requiring global Workflow read access. */
+export async function assertDirectSubmissionAllowed(props: NexWaveAuthProps, doctype: SubmittableDoctype): Promise<void> {
+  const url = new URL("/api/method/frappe.desk.form.load.getdoctype", props.baseUrl);
+  url.searchParams.set("doctype", doctype);
+  url.searchParams.set("with_parent", "0");
+  const response = await frappeFetch<{ docs?: unknown }>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
+  const matches = Array.isArray(response.docs)
+    ? response.docs.filter((row) => isRecord(row) && row.doctype === "DocType" && row.name === doctype) : [];
+  const meta = matches.length === 1 ? matches[0] as Record<string, unknown> : undefined;
+  if (!meta || meta.is_submittable !== 1 || !Array.isArray(meta.__workflow_docs)) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "Submission and workflow settings could not be confirmed. Use the normal NexWave form.");
+  }
+  // Native direct submission does not establish that workflow transitions were approved.
+  if (meta.__workflow_docs.length) {
+    throw new ToolError("WORKFLOW_REQUIRED", "This document type has an active approval workflow. Use the normal NexWave workflow to submit it.");
+  }
+}
+
+/** Submit the canonical server document. Never send permission-filtered fields back as edits. */
+export async function frappeSubmitDocument(props: NexWaveAuthProps, doctype: SubmittableDoctype, name: string, modified: string): Promise<Record<string, unknown>> {
+  const url = new URL(`/api/resource/${encodeURIComponent(doctype)}/${encodeURIComponent(name)}`, props.baseUrl);
+  const response = await frappeFetchAttempt<FrappeEnvelope<Record<string, unknown>>>(url.toString(), upstreamAuthorization(props), {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ docstatus: 1, modified }),
+  }, remainingTime(props), crypto.randomUUID(), 1);
+  if (!isRecord(response.data) || response.data.name !== name || response.data.doctype !== doctype || response.data.docstatus !== 1) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The submission result could not be confirmed. Read the document before another attempt.");
+  }
+  return response.data;
+}
+
+/** Fixed read for the site's date boundary; quotation expiry uses the site's time zone. */
+export async function frappeSiteDate(props: NexWaveAuthProps): Promise<string> {
+  const url = new URL("/api/method/frappe.client.get_time_zone", props.baseUrl);
+  const response = await frappeFetch<{ message?: { time_zone?: unknown } }>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
+  try {
+    const zone = response.message?.time_zone;
+    if (typeof zone !== "string" || !zone) throw new Error();
+    const parts = new Intl.DateTimeFormat("en", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(new Date());
+    const value = (type: string) => parts.find((part) => part.type === type)!.value;
+    return `${value("year")}-${value("month")}-${value("day")}`;
+  } catch {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The site's current date could not be confirmed. Use the normal NexWave conversion workflow.");
+  }
+}
+
+/** Fixed native conversions only. Verify access and reserve first. Never pass a Lead quotation. */
 export async function frappeMapDraft(
   props: NexWaveAuthProps,
   doctype: "Sales Order" | "Purchase Invoice",

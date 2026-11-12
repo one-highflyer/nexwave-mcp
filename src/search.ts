@@ -49,14 +49,14 @@ export async function searchRecords(
   // Candidate retrieval is bounded. A full page must never establish a unique match.
   let rows = await search(query ? [query] : [], directory ? 50 : options.limit);
   const normalized = query ? normaliseName(query, options.legalNames) : "";
-  const hasExactMatch = rows.some((row) => Boolean(query && (
-    String(row.name).toLowerCase() === query.toLowerCase()
-    || searchFields.some((field) => normaliseName(String(row[field] ?? ""), options.legalNames) === normalized)
-  )));
+  // An exact display name does not prove uniqueness: LIKE on "Example Limited"
+  // misses "Example Ltd". Only an explicit record ID can skip candidate retrieval.
+  const hasExactId = rows.some((row) => Boolean(query && String(row.name).toLowerCase() === query.toLowerCase()
+    && !searchFields.some((field) => field !== "name" && normaliseName(String(row[field] ?? ""), options.legalNames) === normalized)));
   let candidateLimitReached = rows.length === (directory ? 50 : options.limit);
   let broadened = false;
-  if (query && directory && !hasExactMatch) {
-    const tokens = [...new Set(normaliseName(query, options.legalNames).split(" ").filter((word) => word.length >= 2))];
+  if (query && directory && !hasExactId) {
+    const tokens = [...new Set(normaliseName(query, options.legalNames).split(" ").filter(Boolean))];
     const terms = tokens.sort((a, b) => b.length - a.length).slice(0, 3);
     if (terms.length && !(terms.length === 1 && terms[0] === query.toLowerCase())) {
       const fallback = await search(terms, 50);
