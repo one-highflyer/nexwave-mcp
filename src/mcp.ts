@@ -12,6 +12,9 @@ import { registerPartyTools } from "./party-tools";
 import { registerInsightTools } from "./insight-tools";
 import { normaliseMcpToolArguments } from "./mcp-request";
 import { registerReportTools } from "./report-tools";
+import { QUOTATION_READABLE_DOCTYPES, registerQuotationLookups } from "./quotation-lookups";
+import { registerQuotationWrites } from "./quotation-writes";
+import { registerPdfTool } from "./pdf-tool";
 import { SALES_INVOICE_STATUS, PURCHASE_INVOICE_STATUS, SALES_ORDER_STATUS, PURCHASE_ORDER_STATUS, DOCSTATUS, ORDER_DATES, statusSchema, dateFilters, invoiceFilters, orderFilters } from "./transaction-filters";
 import type { Env, NexWaveAuthProps } from "./types";
 
@@ -35,8 +38,9 @@ const CURRENCY = z.string().trim().min(3).max(20).optional().describe("Exact doc
 const MANUFACTURING_LINK = z.string().trim().min(1).max(140).optional();
 
 const READABLE_DOCTYPES = {
-  Customer: ["name", "customer_name", "customer_group", "territory", "disabled"],
-  Item: ["name", "item_name", "item_group", "stock_uom", "disabled"],
+  Customer: ["name", "customer_name", "customer_group", "territory", "disabled", "customer_type", "default_currency", "default_price_list", "payment_terms", "tax_category", "customer_primary_contact", "customer_primary_address", "email_id", "mobile_no"],
+  Item: ["name", "item_name", "item_group", "stock_uom", "disabled", "sales_uom", "is_sales_item", "description"],
+  ...QUOTATION_READABLE_DOCTYPES,
   "Sales Order": ["name", "company", "customer", "customer_name", "transaction_date", "delivery_date", "status", "currency", "grand_total", "base_grand_total"],
   "Sales Invoice": ["name", "company", "customer", "customer_name", "posting_date", "due_date", "status", "currency", "grand_total", "base_grand_total", "outstanding_amount", "party_account_currency"],
   "Purchase Order": ["name", "company", "supplier", "supplier_name", "transaction_date", "schedule_date", "status", "currency", "grand_total", "base_grand_total", "per_received", "per_billed"],
@@ -50,7 +54,7 @@ const READABLE_DOCTYPES = {
 
 type ReadableDoctype = keyof typeof READABLE_DOCTYPES;
 
-export function createNexWaveServer(): McpServer {
+export function createNexWaveServer(env?: Env): McpServer {
   const server = new McpServer({ name: "NexWave", version: "0.1.0" });
 
   registerReadTool(server,
@@ -457,6 +461,8 @@ export function createNexWaveServer(): McpServer {
           "Work Order",
           "BOM",
           "Job Card",
+          "Lead", "Quotation", "Item Price", "Price List", "Sales Taxes and Charges Template",
+          "Purchase Taxes and Charges Template", "Terms and Conditions", "Payment Terms Template",
         ]),
         name: z.string().trim().min(1).max(140),
         detail_offset: LIST_OPTIONS.offset,
@@ -473,21 +479,20 @@ export function createNexWaveServer(): McpServer {
   registerReportTools(server, currentProps);
   registerPartyTools(server, currentProps);
   registerInsightTools(server, currentProps);
+  registerQuotationLookups(server, currentProps);
+  registerQuotationWrites(server, currentProps, env);
+  registerPdfTool(server, currentProps);
 
   return withMcpUsageLogging(server);
 }
-
-const baseMcpHandler = createMcpHandler(createNexWaveServer, {
-  route: "/mcp",
-  legacy: "stateless",
-});
 
 export async function mcpHandler(
   request: Request,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  return withMcpErrorBoundary(request, async () => baseMcpHandler(await normaliseMcpToolArguments(request), env, ctx));
+  const handler = createMcpHandler(() => createNexWaveServer(env), { route: "/mcp", legacy: "stateless" });
+  return withMcpErrorBoundary(request, async () => handler(await normaliseMcpToolArguments(request), env, ctx));
 }
 
 function getAuthProps(): NexWaveAuthProps {

@@ -4,6 +4,7 @@ import { adminApp } from "./admin";
 import { mcpHandler } from "./mcp";
 import { handleServiceMcpRequest, SERVICE_MCP_ROUTE } from "./service-mcp";
 import type { Env } from "./types";
+import { WRITE_SCOPES } from "./write-access";
 
 const apiHandler = {
   fetch(request, env, ctx) {
@@ -32,9 +33,9 @@ const provider = new OAuthProvider<Env>({
   tokenEndpoint: "/oauth/token",
   clientRegistrationEndpoint: "/oauth/register",
   clientIdMetadataDocumentEnabled: true,
-  scopesSupported: ["nexwave:read"],
+  scopesSupported: ["nexwave:read", ...WRITE_SCOPES],
   resourceMetadata: {
-    scopes_supported: ["nexwave:read"],
+    scopes_supported: ["nexwave:read", ...WRITE_SCOPES],
     resource_name: "NexWave MCP",
   },
   tokenExchangeCallback: refreshUpstreamOnTokenExchange,

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { readFile } from "node:fs/promises";
 
 // Use the runtime and bundler shipped with the lockfile-pinned Wrangler.
 const require = createRequire(import.meta.url);
@@ -62,6 +63,7 @@ const mf = new Miniflare(convertV4MiniflareOptions({
   compatibilityDate: config.compatibility_date,
   compatibilityFlags: config.compatibility_flags,
   script: bundle.outputFiles[0].text,
+  d1Databases: ["NEXWAVE_MCP_DB"],
   outboundService: async (request) => {
     upstreamCalls++;
     const url = new URL(request.url);
@@ -87,6 +89,16 @@ const mf = new Miniflare(convertV4MiniflareOptions({
 
 try {
   let checks = 0;
+  const db = await mf.getD1Database("NEXWAVE_MCP_DB");
+  for (const [index, file] of ["0001_initial.sql", "0002_site_auth_modes.sql", "0003_write_tools.sql"].entries()) {
+    for (const statement of (await readFile(root + "migrations/" + file, "utf8")).split(";").filter((part) => part.trim())) await db.prepare(statement).run();
+    if (index === 0) await db.prepare("INSERT INTO sites (id, display_name, base_url, client_id, encrypted_client_secret) VALUES ('legacy', 'Example', 'https://example.invalid', 'test', 'test')").run();
+  }
+  assert.equal((await db.prepare("SELECT write_capabilities FROM sites WHERE id = 'legacy'").first()).write_capabilities, "[]", "Existing connections remain read-only after migration");
+  const reserve = () => db.prepare("INSERT INTO write_requests (site_id, user_id, operation, request_key, fingerprint) VALUES ('legacy', 'user', 'create_lead', 'key', 'hash') ON CONFLICT DO NOTHING").run();
+  assert.equal((await reserve()).meta.changes, 1);
+  assert.equal((await reserve()).meta.changes, 0, "D1 rejects a duplicate write reservation");
+  checks += 2;
   for (const operation of ["exchange", "refresh", "user", "api-user", "oauth-list", "api-list"]) {
     for (const status of [200, 301, 302, 303, 307, 308]) {
       const before = upstreamCalls;

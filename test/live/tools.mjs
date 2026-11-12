@@ -67,7 +67,8 @@ try {
     const response = await mf.dispatchFetch("https://gateway.example.invalid/api/admin/sites", {
       method: "POST", headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ displayName: `CI ${role}`, baseUrl: origin, authType: "api_token",
-        apiKey: credentials.apiKey, apiSecret: credentials.apiSecret }),
+        apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
+        writeCapabilities: role === "readonly" ? [] : role === "restricted" ? ["quotations"] : ["quotations", "leads", "customers"] }),
     });
     assert.equal(response.status, 201, `Register valid ${role} API credentials`);
     const registered = await response.json();
@@ -90,9 +91,13 @@ try {
     return body.result;
   }
   const tools = (await rpc("all", "tools/list", {})).tools;
-  assert.equal(tools.length, 33);
+  assert.equal(tools.length, 46);
   const schemas = new Map(tools.map((tool) => [tool.name, z.fromJSONSchema(tool.outputSchema)]));
-  for (const tool of ["list_work_orders", "list_boms", "list_job_cards"]) assert.ok(schemas.has(tool));
+  for (const tool of ["list_work_orders", "list_boms", "list_job_cards", "list_item_prices", "list_price_lists",
+    "list_leads", "list_quotations", "list_tax_templates", "list_print_formats", "list_terms_and_conditions",
+    "list_payment_terms_templates", "create_customer", "create_lead", "create_draft_quotation", "update_draft_quotation",
+    "get_document_pdf"]) assert.ok(schemas.has(tool), `${tool} must be advertised`);
+  assert.equal(schemas.has("preview_quotation"), false);
   async function call(role, name, args = {}, errorCode) {
     const result = await rpc(role, "tools/call", { name, arguments: args });
     if (errorCode) {
@@ -242,8 +247,170 @@ try {
   await call("denied", "list_sales_invoices", { company, currency: "NZD", summary: "totals" }, "PERMISSION_DENIED");
   await call("denied", "get_document", { doctype: "Sales Invoice", name: fixture.sales }, "PERMISSION_DENIED");
   await call("denied", "get_general_ledger", { company, ...dates }, "PERMISSION_DENIED");
+
+  // Read-only pricing and quotation setup use the actual v15 master records and permissions.
+  const lists = await call("all", "list_price_lists", { buying: true, selling: true, currency: "NZD" });
+  assert.ok(lists.records.some((row) => row.name === "MCP NZD" && row.buying === 1 && row.selling === 1));
+  const prices = await call("all", "list_item_prices", { item_code: fixture.quote_items[0], price_list: "MCP NZD", valid_on: "2025-01-15" });
+  assert.deepEqual(new Set(prices.records.map((row) => row.name)), new Set([fixture.quote_prices[0], fixture.customer_price, fixture.supplier_price]));
+  const openDates = await call("all", "list_item_prices", { item_code: fixture.quote_items[1], price_list: "MCP NZD", valid_on: "2025-01-15" });
+  assert.deepEqual(openDates.records.map((row) => row.name), [fixture.quote_prices[1]], "Unset start and end dates remain valid");
+  const customerPrices = await call("all", "list_item_prices", { item_code: fixture.quote_items[0], price_list: "MCP NZD", customer: "MCP Buyer", selling: true, valid_on: "2025-01-15" });
+  assert.deepEqual(customerPrices.records.map((row) => [row.name, row.price_list_rate]), [[fixture.customer_price, 20]]);
+  const supplierPrices = await call("all", "list_item_prices", { item_code: fixture.quote_items[0], price_list: "MCP NZD", supplier: "MCP Supplier", buying: true });
+  assert.deepEqual(supplierPrices.records.map((row) => [row.name, row.price_list_rate]), [[fixture.supplier_price, 10]]);
+  const expiredPrices = await call("all", "list_item_prices", { item_code: fixture.quote_items[0], price_list: "MCP USD", valid_on: "2025-01-15" });
+  assert.deepEqual(expiredPrices.records.map((row) => [row.name, row.price_list_rate]), [[fixture.usd_quote_prices[0], 12]]);
+  assert.ok(expiredPrices.records.every((row) => row.name !== fixture.expired_price), "Expired prices remain excluded beside current prices");
+  const leads = await call("all", "list_leads", { email_id: "mcp-seed-prospect@example.invalid" });
+  assert.deepEqual(leads.records.map((row) => row.name), [fixture.lead]);
+  const taxTemplates = await call("all", "list_tax_templates", { type: "Sales", company });
+  assert.ok(taxTemplates.records.some((row) => row.name === fixture.sales_tax));
+  assert.ok(taxTemplates.records.some((row) => row.name === fixture.alternate_sales_tax));
+  const purchaseTaxTemplates = await call("all", "list_tax_templates", { type: "Purchase", company });
+  assert.ok(purchaseTaxTemplates.records.some((row) => row.name === fixture.purchase_tax));
+  const taxDetail = await call("all", "get_document", { doctype: "Sales Taxes and Charges Template", name: fixture.sales_tax });
+  assert.deepEqual(taxDetail.taxes.map((row) => [row.charge_type, row.rate]), [["On Net Total", 15]]);
+  assert.ok((await call("all", "list_terms_and_conditions", { selling: true })).records.some((row) => row.name === fixture.terms));
+  assert.ok((await call("all", "list_payment_terms_templates")).records.some((row) => row.name === fixture.payment_terms));
+  const printFormats = await call("all", "list_print_formats", { doctype: "Quotation" });
+  assert.equal(printFormats.default_format, "Standard");
+
+  const createCustomer = { request_key: "live-customer-create-0001", customer_name: "MCP Mobile Customer",
+    customer_group: "Commercial", territory: "New Zealand", default_currency: "NZD", default_price_list: "MCP NZD",
+    email_id: "mcp-mobile-customer@example.invalid", first_name: "MCP", last_name: "Mobile Buyer" };
+  const beforeDeniedWrite = upstreamCalls;
+  await call("readonly", "create_customer", createCustomer, "PERMISSION_DENIED");
+  await call("restricted", "create_customer", createCustomer, "PERMISSION_DENIED");
+  assert.equal(upstreamCalls, beforeDeniedWrite, "Read-only and quotation-only capabilities must block customer writes before Frappe");
+  // This connection is opted in at the gateway but its ERP user has no business-record permissions.
+  await call("denied", "create_customer", createCustomer, "PERMISSION_DENIED");
+  const customerCreated = await call("all", "create_customer", createCustomer);
+  assert.equal(customerCreated.document.customer_name, createCustomer.customer_name);
+  assert.equal(customerCreated.replayed, false);
+  const customerReplay = await call("all", "create_customer", createCustomer);
+  assert.equal(customerReplay.name, customerCreated.name);
+  assert.equal(customerReplay.replayed, true);
+  const customerContact = await call("all", "get_document", { doctype: "Customer", name: customerCreated.name });
+  assert.equal(customerContact.email_id, createCustomer.email_id);
+  assert.equal(typeof customerContact.customer_primary_contact, "string");
+  assert.ok(customerContact.customer_primary_contact.length > 0, "Customer creation uses the native primary Contact hook");
+  await call("all", "create_customer", { ...createCustomer, request_key: "live-customer-duplicate-0002" }, "CONFLICT");
+  const createdCustomers = await call("all", "list_customers", { search: createCustomer.customer_name, search_mode: "literal" });
+  assert.deepEqual(createdCustomers.records.map((row) => row.name), [customerCreated.name]);
+  const createLead = { request_key: "live-lead-create-0001", first_name: "MCP", last_name: "Mobile Prospect",
+    company_name: "MCP New Prospect Company", email_id: "mcp-mobile-prospect@example.invalid", territory: "New Zealand" };
+  const leadCreated = await call("all", "create_lead", createLead);
+  assert.equal(leadCreated.document.email_id, createLead.email_id);
+  assert.equal((await call("all", "create_lead", createLead)).name, leadCreated.name);
+  await call("all", "create_lead", { ...createLead, request_key: "live-lead-duplicate-0002" }, "CONFLICT");
+
+  const quoteArgs = { request_key: "live-quote-customer-0001", company, quotation_to: "Customer", party_name: customerCreated.name,
+    transaction_date: "2025-01-15", valid_till: "2025-02-15", selling_price_list: "MCP NZD", currency: "NZD",
+    taxes_and_charges: fixture.sales_tax, payment_terms_template: fixture.payment_terms, tc_name: fixture.terms,
+    items: [{ item_code: fixture.quote_items[0], qty: 2, uom: "Nos" }, { item_code: fixture.quote_items[1], qty: 1, uom: "Nos" }] };
+  const readonlyCalls = upstreamCalls;
+  await call("readonly", "create_draft_quotation", quoteArgs, "PERMISSION_DENIED");
+  assert.equal(upstreamCalls, readonlyCalls, "Read-only quotation writes must not reach Frappe");
+  const quote = await call("all", "create_draft_quotation", quoteArgs);
+  assert.equal(quote.document.docstatus, 0);
+  assert.equal(quote.document.quotation_to, "Customer");
+  assert.equal(quote.document.party_name, customerCreated.name);
+  assert.deepEqual(quote.document.items.map((row) => [row.item_code, row.qty, row.rate, row.amount]), [
+    [fixture.quote_items[0], 2, 25, 50], [fixture.quote_items[1], 1, 40, 40],
+  ], "Omitted rates must be fetched by real v15 quotation validation");
+  assert.equal(quote.document.net_total, 90);
+  assert.equal(quote.document.total_taxes_and_charges, 13.5);
+  assert.equal(quote.document.grand_total, 103.5);
+  assert.equal(quote.document.taxes_and_charges, fixture.sales_tax);
+  assert.equal(quote.document.payment_terms_template, fixture.payment_terms);
+  const quoteReplay = await call("all", "create_draft_quotation", quoteArgs);
+  assert.equal(quoteReplay.name, quote.name);
+  assert.equal(quoteReplay.replayed, true);
+  await call("all", "create_draft_quotation", { ...quoteArgs, valid_till: "2025-03-01" }, "CONFLICT");
+  const savedQuote = await call("all", "get_document", { doctype: "Quotation", name: quote.name });
+  assert.equal(typeof savedQuote.modified, "string");
+  assert.deepEqual(savedQuote.items.map((row) => row.rate), [25, 40]);
+  assert.equal(savedQuote.tc_name, fixture.terms);
+  assert.ok(!savedQuote.terms, "Terms are rendered by NexWave at print time");
+  const updateArgs = { request_key: "live-quote-update-0001", name: quote.name, expected_modified: savedQuote.modified,
+    items: [{ item_code: fixture.quote_items[0], qty: 4, uom: "Nos" }, { item_code: fixture.quote_items[1], qty: 1, uom: "Nos" }] };
+  const updatedQuote = await call("all", "update_draft_quotation", updateArgs);
+  assert.equal(updatedQuote.name, quote.name);
+  assert.equal(updatedQuote.document.docstatus, 0);
+  assert.equal(updatedQuote.document.net_total, 140);
+  assert.equal(updatedQuote.document.total_taxes_and_charges, 21);
+  assert.equal(updatedQuote.document.grand_total, 161);
+  assert.equal((await call("all", "update_draft_quotation", updateArgs)).replayed, true);
+  await call("all", "update_draft_quotation", { request_key: "live-quote-stale-0002", name: quote.name,
+    expected_modified: savedQuote.modified, valid_till: "2025-03-01" }, "CONFLICT");
+  const currentQuote = await call("all", "get_document", { doctype: "Quotation", name: quote.name });
+  await call("all", "update_draft_quotation", { request_key: "live-quote-price-context-0003", name: quote.name,
+    expected_modified: currentQuote.modified, transaction_date: "2025-01-16" }, "INVALID_ARGUMENT");
+  const changedDate = await call("all", "update_draft_quotation", { request_key: "live-quote-price-context-0004", name: quote.name,
+    expected_modified: currentQuote.modified, transaction_date: "2025-01-16", items: updateArgs.items });
+  assert.equal(changedDate.document.grand_total, 161);
+  const beforeTaxChange = await call("all", "get_document", { doctype: "Quotation", name: quote.name });
+  const changedTax = await call("all", "update_draft_quotation", { request_key: "live-quote-tax-change-0005", name: quote.name,
+    expected_modified: beforeTaxChange.modified, taxes_and_charges: fixture.alternate_sales_tax });
+  assert.equal(changedTax.document.taxes_and_charges, fixture.alternate_sales_tax);
+  assert.deepEqual(changedTax.document.taxes.map((row) => row.rate), [5], "A replacement template must replace old rows");
+  assert.equal(changedTax.document.net_total, 140);
+  assert.equal(changedTax.document.total_taxes_and_charges, 7);
+  assert.equal(changedTax.document.grand_total, 147);
+  const beforeCurrencyChange = await call("all", "get_document", { doctype: "Quotation", name: quote.name });
+  const usdQuote = await call("all", "update_draft_quotation", { request_key: "live-quote-currency-change-0006", name: quote.name,
+    expected_modified: beforeCurrencyChange.modified, currency: "USD", selling_price_list: "MCP USD", items: updateArgs.items });
+  assert.equal(usdQuote.document.currency, "USD");
+  assert.equal(usdQuote.document.conversion_rate, 2, "A currency change must replace the old NZD conversion rate");
+  assert.deepEqual(usdQuote.document.items.map((row) => [row.item_code, row.rate, row.amount]), [
+    [fixture.quote_items[0], 12, 48], [fixture.quote_items[1], 18, 18],
+  ]);
+  assert.equal(usdQuote.document.net_total, 66);
+  assert.equal(usdQuote.document.total_taxes_and_charges, 3.3);
+  assert.equal(usdQuote.document.grand_total, 69.3);
+  const discountedQuote = await call("all", "create_draft_quotation", { request_key: "live-quote-pricing-rule-0007", company,
+    quotation_to: "Customer", party_name: "MCP Future", transaction_date: "2025-01-15", valid_till: "2025-02-15",
+    selling_price_list: "MCP NZD", currency: "NZD", taxes_and_charges: fixture.sales_tax,
+    items: [{ item_code: fixture.quote_items[0], qty: 10, uom: "Nos" }] });
+  assert.equal(discountedQuote.document.items[0].price_list_rate, 25);
+  assert.equal(discountedQuote.document.items[0].discount_percentage, 10);
+  assert.equal(discountedQuote.document.items[0].rate, 22.5, "v15 must apply its quantity Pricing Rule when saving");
+  assert.equal(discountedQuote.document.net_total, 225);
+  assert.equal(discountedQuote.document.total_taxes_and_charges, 33.75);
+  assert.equal(discountedQuote.document.grand_total, 258.75);
+  const leadQuote = await call("restricted", "create_draft_quotation", { request_key: "live-quote-lead-0001", company,
+    quotation_to: "Lead", party_name: leadCreated.name, transaction_date: "2025-01-15", valid_till: "2025-02-15",
+    selling_price_list: "MCP NZD", currency: "NZD", taxes_and_charges: fixture.sales_tax,
+    items: [{ item_code: fixture.quote_items[0], qty: 3, uom: "Nos" }] });
+  assert.equal(leadQuote.document.quotation_to, "Lead");
+  assert.equal(leadQuote.document.party_name, leadCreated.name);
+  assert.equal(leadQuote.document.items[0].rate, 25);
+  assert.equal(leadQuote.document.grand_total, 86.25);
+  assert.deepEqual((await call("all", "list_quotations", { company, quotation_to: "Customer", party_name: customerCreated.name, docstatus: 0 })).records.map((row) => row.name), [quote.name]);
+  assert.deepEqual((await call("restricted", "list_quotations", { company, quotation_to: "Lead", party_name: leadCreated.name, docstatus: 0 })).records.map((row) => row.name), [leadQuote.name]);
+  const recipientQuote = await call("all", "create_draft_quotation", { ...quoteArgs, request_key: "live-quote-recipient-create", party_name: "MCP Future",
+    contact_person: fixture.quote_contacts[1], customer_address: fixture.quote_addresses[1], shipping_address_name: fixture.quote_addresses[1] });
+  assert.equal(recipientQuote.document.contact_person, fixture.quote_contacts[1]);
+  assert.equal(recipientQuote.document.contact_email, "", "A selected contact without email cannot borrow the default contact's email");
+  assert.match(recipientQuote.document.contact_display, /Alternate/);
+  assert.match(recipientQuote.document.address_display, /2 Synthetic Street/);
+  assert.match(recipientQuote.document.shipping_address, /2 Synthetic Street/);
+  const primaryRecipient = await call("all", "update_draft_quotation", { request_key: "live-quote-recipient-primary", name: recipientQuote.name,
+    expected_modified: recipientQuote.document.modified, contact_person: fixture.quote_contacts[0],
+    customer_address: fixture.quote_addresses[0], shipping_address_name: fixture.quote_addresses[0] });
+  assert.equal(primaryRecipient.document.contact_email, "mcp-primary@example.invalid");
+  assert.match(primaryRecipient.document.address_display, /1 Synthetic Street/);
+  assert.match(primaryRecipient.document.shipping_address, /1 Synthetic Street/);
+  const alternateRecipient = await call("all", "update_draft_quotation", { request_key: "live-quote-recipient-alternate", name: recipientQuote.name,
+    expected_modified: primaryRecipient.document.modified, contact_person: fixture.quote_contacts[1],
+    customer_address: fixture.quote_addresses[1], shipping_address_name: fixture.quote_addresses[1] });
+  assert.equal(alternateRecipient.document.contact_email, "");
+  assert.match(alternateRecipient.document.contact_display, /Alternate/);
+  assert.match(alternateRecipient.document.address_display, /2 Synthetic Street/);
+  assert.match(alternateRecipient.document.shipping_address, /2 Synthetic Street/);
   assert.ok(upstreamCalls > checks, "Tool calls must reach live Frappe");
-  console.log(`${checks} live Frappe tool checks passed (accuracy, currencies, pagination, details, reports, permissions).`);
+  console.log(`${checks} live Frappe tool checks passed (accuracy, currencies, pagination, prices, quotation writes, tax changes, replay, permissions).`);
 } finally {
   await mf.dispose();
 }

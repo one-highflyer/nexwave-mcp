@@ -5,6 +5,7 @@ import { normaliseMcpToolArguments } from "./mcp-request";
 import { withMcpErrorBoundary } from "./mcp-boundary";
 import { withServiceToolJsonResponse } from "./service-response";
 import { decryptSecret, sha256 } from "./security";
+import { parseWriteCapabilities } from "./write-access";
 import type { Env, NexWaveApiTokenAuthProps } from "./types";
 
 export const SERVICE_MCP_ROUTE = "/service/mcp";
@@ -23,7 +24,7 @@ export async function handleServiceMcpRequest(
     const authentication = await authenticateServiceMcpRequest(request, env);
     if ("response" in authentication) return authentication.response;
 
-    const handler = createMcpHandler(createNexWaveServer, {
+    const handler = createMcpHandler(() => createNexWaveServer(env), {
       route: SERVICE_MCP_ROUTE,
       legacy: "stateless",
       authContext: { props: { ...authentication.props } },
@@ -78,6 +79,7 @@ export async function authenticateServiceMcpRequest(
       user: site.api_user,
       upstreamApiKey: apiKey,
       upstreamApiSecret: apiSecret,
+      writeCapabilities: parseWriteCapabilities(site.write_capabilities),
     },
   };
 }

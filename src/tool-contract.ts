@@ -14,6 +14,7 @@ const REPORT_TOOLS = new Set(["get_stock_balance", "get_stock_ledger", "get_prof
 const OUTPUTS = {
   get_current_user: z.looseObject({ site: z.string(), site_url: z.string(), user: z.string() }),
   get_document: z.looseObject({ detail_meta: ROW }),
+  get_document_pdf: z.object({ doctype: z.string(), name: z.string(), print_format: z.string(), filename: z.string(), mime_type: z.literal("application/pdf"), size_bytes: COUNT, resource_uri: z.string() }),
   get_accounts_receivable_summary: z.looseObject({ report: z.string(), totals: z.looseObject({ outstanding: z.number() }), top_customers: ROWS, customer_count: COUNT, invoice_count: COUNT, truncated: z.boolean(), overdue_complete: z.boolean() }),
   get_accounts_payable_summary: BALANCE,
   get_party_balance: z.union([CANDIDATES, BALANCE.extend({ status: z.literal("matched"), party: z.string(), party_type: z.enum(["Customer", "Supplier"]) })]).meta({ type: "object" }),
@@ -37,5 +38,18 @@ export function registerReadTool<Shape extends Record<string, z.ZodType>>(
     inputSchema: z.object(config.inputSchema),
     outputSchema: z.union([successSchema, FAILURE]).meta({ type: "object" }),
     annotations: { readOnlyHint: true, destructiveHint: false },
+  }, handler);
+}
+
+export function registerWriteTool(
+  server: McpServer,
+  name: string,
+  config: { description: string; inputSchema: z.ZodType },
+  handler: (args: unknown) => Promise<CallToolResult>,
+) {
+  return server.registerTool(name, {
+    ...config,
+    outputSchema: z.union([z.object({ doctype: z.string(), name: z.string(), replayed: z.boolean(), document: ROW, note: z.string() }), FAILURE]).meta({ type: "object" }),
+    annotations: { readOnlyHint: false, destructiveHint: name.startsWith("update_"), idempotentHint: true },
   }, handler);
 }

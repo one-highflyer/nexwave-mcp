@@ -1,10 +1,12 @@
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { BRAND_HEAD, BRAND_MARK } from "./brand";
-import { createSite, deleteSite, getSiteByBaseUrl, listSites } from "./db";
+import { createSite, deleteSite, getSiteByBaseUrl, getSite, listSites } from "./db";
 import { getApiTokenUser } from "./frappe";
 import { encryptSecret, randomToken, safeBaseUrl, secureEqual, sha256 } from "./security";
 import type { Env, SiteAuthType, SiteRecord } from "./types";
+import { WRITE_CAPABILITIES } from "./types";
+import { parseWriteCapabilities } from "./write-access";
 
 export const adminApp = new Hono<{ Bindings: Env }>();
 
@@ -22,6 +24,7 @@ adminApp.get("/api/admin/sites", requireAdmin, async (context) => {
       apiUser: site.api_user,
       enabled: Boolean(site.enabled),
       createdAt: site.created_at,
+      writeCapabilities: parseWriteCapabilities(site.write_capabilities),
     })),
   );
 });
@@ -31,6 +34,8 @@ adminApp.post("/api/admin/sites", requireAdmin, async (context) => {
   const displayName = requiredString(input.displayName, "Display name", 100);
   const baseUrl = safeBaseUrl(requiredString(input.baseUrl, "Site URL", 300));
   const authType = requiredAuthType(input.authType);
+  const writeCapabilities = validatedCapabilities(input.writeCapabilities);
+  if (!writeCapabilities) return context.json({ error: "Invalid write capabilities." }, 400);
   if (await getSiteByBaseUrl(context.env, baseUrl, authType)) {
     return context.json({ error: "That site URL and authentication type are already registered." }, 409);
   }
@@ -54,6 +59,7 @@ adminApp.post("/api/admin/sites", requireAdmin, async (context) => {
       api_user: null,
       service_token_hash: null,
       enabled: 1,
+      write_capabilities: JSON.stringify(writeCapabilities),
     };
   } else {
     const apiKey = requiredString(input.apiKey, "API key", 500);
@@ -83,6 +89,7 @@ adminApp.post("/api/admin/sites", requireAdmin, async (context) => {
       api_user: apiUser,
       service_token_hash: serviceTokenHash,
       enabled: 1,
+      write_capabilities: JSON.stringify(writeCapabilities),
     };
   }
 
@@ -105,7 +112,19 @@ adminApp.post("/api/admin/sites", requireAdmin, async (context) => {
     apiUser: site.api_user,
     serviceToken,
     enabled: true,
+    writeCapabilities,
   }, 201);
+});
+
+adminApp.patch("/api/admin/sites/:id/capabilities", requireAdmin, async (context) => {
+  const site = await getSite(context.env, context.req.param("id") ?? "");
+  if (!site) return context.json({ error: "Site not found." }, 404);
+  const input = await context.req.json<Record<string, unknown>>().catch(() => ({} as Record<string, unknown>));
+  const capabilities = validatedCapabilities(input.writeCapabilities);
+  if (!capabilities || input.writeCapabilities === undefined) return context.json({ error: "Invalid write capabilities." }, 400);
+  await context.env.NEXWAVE_MCP_DB.prepare("UPDATE sites SET write_capabilities = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .bind(JSON.stringify(capabilities), site.id).run();
+  return context.json({ writeCapabilities: capabilities });
 });
 
 adminApp.delete("/api/admin/sites/:id", requireAdmin, async (context) => {
@@ -138,6 +157,12 @@ function requiredAuthType(value: unknown): SiteAuthType {
   if (value === undefined) return "oauth";
   if (value === "oauth" || value === "api_token") return value;
   throw new Error("Authentication type must be OAuth or fixed API token.");
+}
+
+function validatedCapabilities(value: unknown) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || !value.every((entry) => WRITE_CAPABILITIES.includes(entry))) return null;
+  return parseWriteCapabilities(value);
 }
 
 function htmlResponse(body: string): Response {
@@ -231,6 +256,12 @@ const ADMIN_HTML = `<!doctype html>
           <label for="api-secret">API secret</label>
           <input id="api-secret" type="password" autocomplete="new-password" maxlength="500">
         </div>
+        <fieldset><legend>Optional write access</legend>
+          <p class="hint">Read-only by default. Frappe user permissions still apply. OAuth users must reconnect and approve the matching write scopes.</p>
+          <label><input type="checkbox" id="write-quotations"> Create and update draft quotations</label>
+          <label><input type="checkbox" id="write-leads"> Create leads</label>
+          <label><input type="checkbox" id="write-customers"> Create customers</label>
+        </fieldset>
         <button type="submit">Save connection</button>
         <div class="status" id="status" role="status"></div>
         <div class="service-token hidden" id="service-token-panel">
@@ -278,6 +309,25 @@ const ADMIN_HTML = `<!doctype html>
         ? 'Fixed API token' + (site.apiUser ? ' · ' + site.apiUser : '')
         : 'OAuth 2';
       text.append(title, url, authentication);
+      const access = document.createElement('div');
+      const checks = ['quotations', 'leads', 'customers'].map((capability) => {
+        const label = document.createElement('label');
+        const check = document.createElement('input'); check.type = 'checkbox';
+        check.checked = (site.writeCapabilities || []).includes(capability);
+        label.append(check, document.createTextNode(' ' + capability)); access.append(label);
+        return { capability, check };
+      });
+      const save = document.createElement('button'); save.type = 'button'; save.textContent = 'Save access';
+      save.addEventListener('click', async () => {
+        try {
+          const response = await fetch('/api/admin/sites/' + encodeURIComponent(site.id) + '/capabilities', {
+            method: 'PATCH', headers: headers(), body: JSON.stringify({ writeCapabilities: checks.filter((entry) => entry.check.checked).map((entry) => entry.capability) }),
+          });
+          if (!response.ok) throw new Error('Could not save access.');
+          $('status').textContent = 'Access saved. OAuth users must reconnect to grant new write access.';
+        } catch (error) { $('status').textContent = error.message; }
+      });
+      access.append(save); text.append(access);
       const remove = document.createElement('button'); remove.className = 'secondary'; remove.textContent = 'Remove';
       remove.addEventListener('click', async () => {
         if (!confirm('Remove ' + site.displayName + '?')) return;
@@ -307,6 +357,7 @@ const ADMIN_HTML = `<!doctype html>
       clientSecret: $('client-secret').value,
       apiKey: $('api-key').value,
       apiSecret: $('api-secret').value,
+      writeCapabilities: ['quotations', 'leads', 'customers'].filter((capability) => $('write-' + capability).checked),
     };
     try {
       const response = await fetch('/api/admin/sites', { method: 'POST', headers: headers(), body: JSON.stringify(body) });

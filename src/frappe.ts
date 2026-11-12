@@ -124,6 +124,38 @@ export async function frappeGet<T>(props: NexWaveAuthProps, doctype: string, nam
   return response.data as T;
 }
 
+/** Render an existing readable Address with the site's normal country-specific template. */
+export async function frappeAddressDisplay(props: NexWaveAuthProps, name: string): Promise<string> {
+  await frappeGet(props, "Address", name);
+  const url = new URL("/api/method/frappe.contacts.doctype.address.address.get_address_display", props.baseUrl);
+  url.searchParams.set("address_dict", name);
+  const response = await frappeFetch<FrappeEnvelope<unknown>>(url.toString(), upstreamAuthorization(props), {}, remainingTime(props));
+  if (typeof response.message !== "string" || response.message.length > 100_000) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "NexWave did not return a valid address display.");
+  }
+  return response.message;
+}
+
+/** Mutations are sent once. Their caller owns durable replay protection and uncertain outcomes. */
+export async function frappeWrite(
+  props: NexWaveAuthProps,
+  doctype: "Quotation" | "Customer" | "Lead",
+  document: Record<string, unknown>,
+  name?: string,
+): Promise<Record<string, unknown>> {
+  const url = new URL(`/api/resource/${encodeURIComponent(doctype)}${name ? `/${encodeURIComponent(name)}` : ""}`, props.baseUrl);
+  const response = await frappeFetchAttempt<FrappeEnvelope<Record<string, unknown>>>(url.toString(), upstreamAuthorization(props), {
+    method: name ? "PUT" : "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...document, doctype, docstatus: 0 }),
+  }, remainingTime(props), crypto.randomUUID(), 1);
+  if (!isRecord(response.data) || typeof response.data.name !== "string" || !response.data.name
+    || response.data.docstatus !== 0 || (name !== undefined && response.data.name !== name)) {
+    throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The write result could not be confirmed. Check the document before trying another request.");
+  }
+  return response.data;
+}
+
 export async function frappeRunReport(
   props: NexWaveAuthProps,
   reportName: string,
@@ -304,6 +336,9 @@ async function frappeFetchAttempt<T>(
       }
       if (response.status === 404) {
         throw new ToolError("NOT_FOUND", "The requested NexWave resource was not found.");
+      }
+      if ([409, 417, 422].includes(response.status)) {
+        throw new ToolError("VALIDATION_FAILED", "NexWave rejected the values or the document changed. Read the current document and check required fields, dates, linked records and permissions.");
       }
       throw new ToolError("UPSTREAM_UNAVAILABLE", `NexWave returned HTTP ${response.status}.`, response.status === 429 || response.status >= 500);
     }
