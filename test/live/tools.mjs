@@ -68,7 +68,8 @@ try {
       method: "POST", headers: { Authorization: `Bearer ${adminToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ displayName: `CI ${role}`, baseUrl: origin, authType: "api_token",
         apiKey: credentials.apiKey, apiSecret: credentials.apiSecret,
-        writeCapabilities: role === "readonly" ? [] : role === "restricted" ? ["quotations"] : ["quotations", "leads", "customers"] }),
+        writeCapabilities: role === "readonly" ? [] : role === "restricted" ? ["quotations"]
+          : ["quotations", "leads", "customers", "sales_orders", "purchase_invoices"] }),
     });
     assert.equal(response.status, 201, `Register valid ${role} API credentials`);
     const registered = await response.json();
@@ -91,11 +92,12 @@ try {
     return body.result;
   }
   const tools = (await rpc("all", "tools/list", {})).tools;
-  assert.equal(tools.length, 46);
+  assert.equal(tools.length, 50);
   const schemas = new Map(tools.map((tool) => [tool.name, z.fromJSONSchema(tool.outputSchema)]));
   for (const tool of ["list_work_orders", "list_boms", "list_job_cards", "list_item_prices", "list_price_lists",
     "list_leads", "list_quotations", "list_tax_templates", "list_print_formats", "list_terms_and_conditions",
     "list_payment_terms_templates", "create_customer", "create_lead", "create_draft_quotation", "update_draft_quotation",
+    "create_draft_sales_order", "update_draft_sales_order", "create_draft_purchase_invoice", "update_draft_purchase_invoice",
     "get_document_pdf"]) assert.ok(schemas.has(tool), `${tool} must be advertised`);
   assert.equal(schemas.has("preview_quotation"), false);
   async function call(role, name, args = {}, errorCode) {
@@ -409,8 +411,110 @@ try {
   assert.match(alternateRecipient.document.contact_display, /Alternate/);
   assert.match(alternateRecipient.document.address_display, /2 Synthetic Street/);
   assert.match(alternateRecipient.document.shipping_address, /2 Synthetic Street/);
+
+  const sourceQuote = await call("all", "get_document", { doctype: "Quotation", name: fixture.source_quotation });
+  assert.equal(sourceQuote.docstatus, 1);
+  assert.deepEqual(sourceQuote.items.map((row) => row.item_code), [fixture.quote_items[1], fixture.quote_items[1]]);
+  assert.deepEqual(sourceQuote.items.map((row) => row.name), fixture.source_quotation_rows);
+  const salesOrderArgs = { request_key: "live-sales-order-linked-create", company, customer: "MCP Buyer",
+    transaction_date: "2025-01-15", delivery_date: "2025-01-20", currency: "NZD", selling_price_list: "MCP NZD",
+    items: [{ item_code: fixture.quote_items[1], qty: 3, uom: "Nos",
+      prevdoc_docname: sourceQuote.name, quotation_item: sourceQuote.items[1].name }] };
+  const beforeOrderDenied = upstreamCalls;
+  await call("readonly", "create_draft_sales_order", salesOrderArgs, "PERMISSION_DENIED");
+  await call("restricted", "create_draft_sales_order", salesOrderArgs, "PERMISSION_DENIED");
+  assert.equal(upstreamCalls, beforeOrderDenied, "Quotation permission alone cannot create a Sales Order");
+  await call("denied", "create_draft_sales_order", salesOrderArgs, "PERMISSION_DENIED");
+  const salesOrder = await call("all", "create_draft_sales_order", salesOrderArgs);
+  assert.equal(salesOrder.document.docstatus, 0);
+  assert.equal(salesOrder.document.additional_discount_percentage, 10);
+  assert.equal(salesOrder.document.grand_total, 121.5, "Partial quotation conversion must retain its percentage document discount");
+  assert.deepEqual(salesOrder.document.items.map((row) => [row.qty, row.prevdoc_docname, row.quotation_item]), [
+    [3, sourceQuote.name, sourceQuote.items[1].name],
+  ], "A partial order must reference the selected duplicate source row");
+  assert.equal((await call("all", "create_draft_sales_order", salesOrderArgs)).replayed, true);
+  const savedSalesOrder = await call("all", "get_document", { doctype: "Sales Order", name: salesOrder.name });
+  assert.equal(savedSalesOrder.items[0].quotation_item, sourceQuote.items[1].name);
+  const salesOrderUpdate = { request_key: "live-sales-order-linked-update", name: salesOrder.name,
+    expected_modified: savedSalesOrder.modified,
+    items: [{ name: savedSalesOrder.items[0].name, item_code: fixture.quote_items[1], qty: 4 }] };
+  await call("readonly", "update_draft_sales_order", salesOrderUpdate, "PERMISSION_DENIED");
+  const updatedSalesOrder = await call("all", "update_draft_sales_order", salesOrderUpdate);
+  assert.equal(updatedSalesOrder.document.additional_discount_percentage, 10);
+  assert.equal(updatedSalesOrder.document.grand_total, 162);
+  assert.deepEqual(updatedSalesOrder.document.items.map((row) => [row.name, row.qty, row.prevdoc_docname, row.quotation_item]), [
+    [savedSalesOrder.items[0].name, 4, sourceQuote.name, sourceQuote.items[1].name],
+  ], "A quantity update must preserve the target child name and omitted source references");
+  assert.equal((await call("all", "update_draft_sales_order", salesOrderUpdate)).replayed, true);
+  await call("all", "update_draft_sales_order", { ...salesOrderUpdate, request_key: "live-sales-order-stale-update" }, "CONFLICT");
+  const currentSalesOrder = await call("all", "get_document", { doctype: "Sales Order", name: salesOrder.name });
+  assert.deepEqual(currentSalesOrder.items.map((row) => [row.name, row.prevdoc_docname, row.quotation_item]), [
+    [savedSalesOrder.items[0].name, sourceQuote.name, sourceQuote.items[1].name],
+  ]);
+  await call("all", "update_draft_sales_order", { request_key: "live-sales-order-relink-rejected", name: salesOrder.name,
+    expected_modified: currentSalesOrder.modified, items: [{ name: currentSalesOrder.items[0].name,
+      item_code: fixture.quote_items[1], qty: 4, prevdoc_docname: sourceQuote.name, quotation_item: sourceQuote.items[0].name }] }, "INVALID_ARGUMENT");
+  const standaloneSalesOrder = await call("all", "create_draft_sales_order", {
+    request_key: "live-sales-order-standalone-create", company, customer: "MCP Future",
+    transaction_date: "2025-01-15", delivery_date: "2025-01-20", currency: "NZD", selling_price_list: "MCP NZD",
+    items: [{ item_code: fixture.quote_items[1], qty: 1, uom: "Nos", rate: 40 }] });
+  assert.equal(standaloneSalesOrder.document.docstatus, 0);
+  assert.ok(!standaloneSalesOrder.document.items[0].quotation_item);
+
+  const sourcePurchaseOrder = await call("all", "get_document", { doctype: "Purchase Order", name: fixture.source_purchase_order });
+  assert.equal(sourcePurchaseOrder.docstatus, 1);
+  assert.deepEqual(sourcePurchaseOrder.items.map((row) => row.item_code), [fixture.quote_items[1], fixture.quote_items[1]]);
+  assert.deepEqual(sourcePurchaseOrder.items.map((row) => row.name), fixture.source_purchase_order_rows);
+  const purchaseInvoiceArgs = { request_key: "live-purchase-invoice-linked-create", company, supplier: "MCP Supplier",
+    posting_date: "2025-01-15", due_date: "2025-01-31", bill_no: "MCP-SUPPLIER-BILL-001", bill_date: "2025-01-12",
+    currency: "NZD", buying_price_list: "MCP NZD",
+    items: [{ item_code: fixture.quote_items[1], qty: 2, uom: "Nos",
+      purchase_order: sourcePurchaseOrder.name, po_detail: sourcePurchaseOrder.items[1].name }] };
+  const beforeInvoiceDenied = upstreamCalls;
+  await call("readonly", "create_draft_purchase_invoice", purchaseInvoiceArgs, "PERMISSION_DENIED");
+  await call("restricted", "create_draft_purchase_invoice", purchaseInvoiceArgs, "PERMISSION_DENIED");
+  assert.equal(upstreamCalls, beforeInvoiceDenied, "Quotation permission alone cannot create a Purchase Invoice");
+  await call("denied", "create_draft_purchase_invoice", purchaseInvoiceArgs, "PERMISSION_DENIED");
+  const purchaseInvoice = await call("all", "create_draft_purchase_invoice", purchaseInvoiceArgs);
+  assert.equal(purchaseInvoice.document.docstatus, 0);
+  assert.equal(purchaseInvoice.document.additional_discount_percentage, 10);
+  assert.equal(purchaseInvoice.document.grand_total, 39.6, "Partial PO conversion must retain its percentage document discount");
+  assert.equal(purchaseInvoice.document.bill_no, purchaseInvoiceArgs.bill_no);
+  assert.equal(purchaseInvoice.document.bill_date, purchaseInvoiceArgs.bill_date);
+  assert.deepEqual(purchaseInvoice.document.items.map((row) => [row.qty, row.purchase_order, row.po_detail]), [
+    [2, sourcePurchaseOrder.name, sourcePurchaseOrder.items[1].name],
+  ], "A partial bill must reference the selected duplicate PO row");
+  assert.equal((await call("all", "create_draft_purchase_invoice", purchaseInvoiceArgs)).replayed, true);
+  const savedPurchaseInvoice = await call("all", "get_document", { doctype: "Purchase Invoice", name: purchaseInvoice.name });
+  assert.equal(savedPurchaseInvoice.items[0].po_detail, sourcePurchaseOrder.items[1].name);
+  const purchaseInvoiceUpdate = { request_key: "live-purchase-invoice-linked-update", name: purchaseInvoice.name,
+    expected_modified: savedPurchaseInvoice.modified,
+    items: [{ name: savedPurchaseInvoice.items[0].name, item_code: fixture.quote_items[1], qty: 3 }] };
+  await call("readonly", "update_draft_purchase_invoice", purchaseInvoiceUpdate, "PERMISSION_DENIED");
+  const updatedPurchaseInvoice = await call("all", "update_draft_purchase_invoice", purchaseInvoiceUpdate);
+  assert.equal(updatedPurchaseInvoice.document.additional_discount_percentage, 10);
+  assert.equal(updatedPurchaseInvoice.document.grand_total, 59.4);
+  assert.deepEqual(updatedPurchaseInvoice.document.items.map((row) => [row.name, row.qty, row.purchase_order, row.po_detail]), [
+    [savedPurchaseInvoice.items[0].name, 3, sourcePurchaseOrder.name, sourcePurchaseOrder.items[1].name],
+  ], "A bill quantity update must preserve the target child name and omitted source references");
+  assert.equal((await call("all", "update_draft_purchase_invoice", purchaseInvoiceUpdate)).replayed, true);
+  await call("all", "update_draft_purchase_invoice", { ...purchaseInvoiceUpdate, request_key: "live-purchase-invoice-stale-update" }, "CONFLICT");
+  const currentPurchaseInvoice = await call("all", "get_document", { doctype: "Purchase Invoice", name: purchaseInvoice.name });
+  assert.deepEqual(currentPurchaseInvoice.items.map((row) => [row.name, row.purchase_order, row.po_detail]), [
+    [savedPurchaseInvoice.items[0].name, sourcePurchaseOrder.name, sourcePurchaseOrder.items[1].name],
+  ]);
+  await call("all", "update_draft_purchase_invoice", { request_key: "live-purchase-invoice-relink-rejected", name: purchaseInvoice.name,
+    expected_modified: currentPurchaseInvoice.modified, items: [{ name: currentPurchaseInvoice.items[0].name,
+      item_code: fixture.quote_items[1], qty: 3, purchase_order: sourcePurchaseOrder.name, po_detail: sourcePurchaseOrder.items[0].name }] }, "INVALID_ARGUMENT");
+  const standalonePurchaseInvoice = await call("all", "create_draft_purchase_invoice", {
+    request_key: "live-purchase-invoice-standalone-create", company, supplier: "MCP Supplier",
+    posting_date: "2025-01-15", due_date: "2025-01-31", bill_no: "MCP-SUPPLIER-BILL-002", bill_date: "2025-01-12",
+    currency: "NZD", buying_price_list: "MCP NZD",
+    items: [{ item_code: fixture.quote_items[1], qty: 1, uom: "Nos", rate: 22 }] });
+  assert.equal(standalonePurchaseInvoice.document.docstatus, 0);
+  assert.ok(!standalonePurchaseInvoice.document.items[0].po_detail);
   assert.ok(upstreamCalls > checks, "Tool calls must reach live Frappe");
-  console.log(`${checks} live Frappe tool checks passed (accuracy, currencies, pagination, prices, quotation writes, tax changes, replay, permissions).`);
+  console.log(`${checks} live Frappe tool checks passed (accuracy, prices, draft writes, source line links, replay, permissions).`);
 } finally {
   await mf.dispose();
 }

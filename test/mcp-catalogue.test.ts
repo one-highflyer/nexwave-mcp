@@ -16,6 +16,10 @@ describe("MCP tool catalogue", () => {
       "get_accounts_payable_summary",
       "get_sales_summary",
       "get_stock_risk",
+      "create_draft_sales_order",
+      "update_draft_sales_order",
+      "create_draft_purchase_invoice",
+      "update_draft_purchase_invoice",
     ]) {
       expect(server.toolInputSchemaJson(name), name).toBeDefined();
     }
@@ -67,6 +71,10 @@ describe("MCP tool catalogue", () => {
       "get_accounts_payable_summary",
       "get_sales_summary",
       "get_stock_risk",
+      "create_draft_sales_order",
+      "update_draft_sales_order",
+      "create_draft_purchase_invoice",
+      "update_draft_purchase_invoice",
     ]) {
       expect(findNullableSchemaNodes(server.toolInputSchemaJson(name)), name).toEqual([]);
     }

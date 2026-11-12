@@ -160,6 +160,28 @@ def run():
         quote_contacts.append(contact.name)
         quote_addresses.append(address.name)
     frappe.db.set_value("Customer", "MCP Future", "customer_primary_contact", quote_contacts[0])
+
+    # Source rows deliberately repeat one Item. Linking by item_code instead of the
+    # exact child name would choose the wrong source line in the write tests.
+    source_quotation = frappe.get_doc({"doctype": "Quotation", "company": alpha.name,
+        "quotation_to": "Customer", "party_name": "MCP Buyer",
+        "transaction_date": "2025-01-10", "valid_till": "2099-12-31",
+        "currency": "NZD", "selling_price_list": "MCP NZD", "ignore_pricing_rule": 1,
+        "apply_discount_on": "Net Total", "additional_discount_percentage": 10,
+        "items": [{"item_code": quote_items[1], "qty": 6, "uom": "Nos", "rate": 40},
+            {"item_code": quote_items[1], "qty": 9, "uom": "Nos", "rate": 45}]}).insert()
+    source_quotation.submit()
+    source_purchase_order = frappe.get_doc({"doctype": "Purchase Order", "company": alpha.name,
+        "supplier": "MCP Supplier", "transaction_date": "2025-01-10", "schedule_date": "2025-01-20",
+        "currency": "NZD", "buying_price_list": "MCP NZD", "ignore_pricing_rule": 1,
+        "apply_discount_on": "Net Total", "additional_discount_percentage": 10,
+        "items": [{"item_code": quote_items[1], "qty": 5, "uom": "Nos", "rate": 17,
+                "schedule_date": "2025-01-20", "expense_account": alpha.default_expense_account,
+                "cost_center": alpha.cost_center},
+            {"item_code": quote_items[1], "qty": 8, "uom": "Nos", "rate": 22,
+                "schedule_date": "2025-01-20", "expense_account": alpha.default_expense_account,
+                "cost_center": alpha.cost_center}]}).insert()
+    source_purchase_order.submit()
     credentials = {}
     # Item-wise Sales Register also needs UOM read access (Stock User).
     # Master roles grant Item Price reads and party creation. Gateway capabilities are tested
@@ -186,7 +208,11 @@ def run():
         "expired_price": expired_price.name, "lead": lead.name,
         "sales_tax": sales_templates[0], "alternate_sales_tax": sales_templates[1],
         "purchase_tax": purchase_template.name, "terms": terms.name, "payment_terms": payment_terms.name,
-        "quote_contacts": quote_contacts, "quote_addresses": quote_addresses}
+        "quote_contacts": quote_contacts, "quote_addresses": quote_addresses,
+        "source_quotation": source_quotation.name,
+        "source_quotation_rows": [row.name for row in source_quotation.items],
+        "source_purchase_order": source_purchase_order.name,
+        "source_purchase_order_rows": [row.name for row in source_purchase_order.items]}
     output = Path(frappe.get_site_path("..", "live-fixtures.json")).resolve()
     output.write_text(json.dumps(manifest))
     output.chmod(0o600)

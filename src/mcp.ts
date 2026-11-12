@@ -14,6 +14,7 @@ import { normaliseMcpToolArguments } from "./mcp-request";
 import { registerReportTools } from "./report-tools";
 import { QUOTATION_READABLE_DOCTYPES, registerQuotationLookups } from "./quotation-lookups";
 import { registerQuotationWrites } from "./quotation-writes";
+import { registerTransactionWrites } from "./transaction-writes";
 import { registerPdfTool } from "./pdf-tool";
 import { SALES_INVOICE_STATUS, PURCHASE_INVOICE_STATUS, SALES_ORDER_STATUS, PURCHASE_ORDER_STATUS, DOCSTATUS, ORDER_DATES, statusSchema, dateFilters, invoiceFilters, orderFilters } from "./transaction-filters";
 import type { Env, NexWaveAuthProps } from "./types";
@@ -53,6 +54,14 @@ const READABLE_DOCTYPES = {
 } as const;
 
 type ReadableDoctype = keyof typeof READABLE_DOCTYPES;
+
+// Draft edit fields are read from one document, without increasing list payloads.
+const TRANSACTION_DOCUMENT_FIELDS: Partial<Record<ReadableDoctype, readonly string[]>> = {
+  Quotation: ["order_type", "apply_discount_on", "additional_discount_percentage", "discount_amount"],
+  "Purchase Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount"],
+  "Sales Order": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "order_type", "selling_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "customer_address", "shipping_address_name", "contact_person"],
+  "Purchase Invoice": ["modified", "docstatus", "apply_discount_on", "additional_discount_percentage", "discount_amount", "bill_no", "bill_date", "buying_price_list", "price_list_currency", "conversion_rate", "plc_conversion_rate", "credit_to", "update_stock", "is_return", "return_against", "is_paid", "paid_amount", "net_total", "total", "total_taxes_and_charges", "rounded_total", "taxes_and_charges", "payment_terms_template", "tc_name", "terms", "supplier_address", "shipping_address", "contact_person"],
+};
 
 export function createNexWaveServer(env?: Env): McpServer {
   const server = new McpServer({ name: "NexWave", version: "0.1.0" });
@@ -472,7 +481,7 @@ export function createNexWaveServer(env?: Env): McpServer {
     async ({ doctype, name, detail_offset, detail_limit }) => {
       const props = await currentProps();
       const data = await frappeGet<Record<string, unknown>>(props, doctype, name);
-      return structuredResult({ ...selectFields(data, READABLE_DOCTYPES[doctype as ReadableDoctype]), ...documentDetails(doctype, data, detail_offset, detail_limit) });
+      return structuredResult({ ...selectFields(data, [...READABLE_DOCTYPES[doctype as ReadableDoctype], ...(TRANSACTION_DOCUMENT_FIELDS[doctype] ?? [])]), ...documentDetails(doctype, data, detail_offset, detail_limit) });
     },
   );
 
@@ -481,6 +490,7 @@ export function createNexWaveServer(env?: Env): McpServer {
   registerInsightTools(server, currentProps);
   registerQuotationLookups(server, currentProps);
   registerQuotationWrites(server, currentProps, env);
+  registerTransactionWrites(server, currentProps, env);
   registerPdfTool(server, currentProps);
 
   return withMcpUsageLogging(server);
