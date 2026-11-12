@@ -6,6 +6,7 @@ import {
   frappeList,
   frappeRunReport,
   frappeSiteDate,
+  frappeWrite,
   getApiTokenUser,
   getLoggedUser,
 } from "../src/frappe";
@@ -37,6 +38,72 @@ const API_TOKEN_PROPS: NexWaveApiTokenAuthProps = {
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("Frappe REST client", () => {
+  it.each([417, 422])("reports safe missing-field names from a native write failure (%s)", async (status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ exc_type: "MandatoryError", exception: "frappe.exceptions.MandatoryError: [Sales Order, private-order-id]: delivery_date, delivery_date", _server_messages: 'private bearer secret and customer details' }, { status })));
+    const pending = frappeWrite(API_TOKEN_PROPS, "Sales Order", {});
+    await expect(pending).rejects.toThrow("VALIDATION_FAILED");
+    await expect(pending).rejects.toThrow("delivery_date");
+    await expect(pending).rejects.not.toThrow("private");
+    await expect(pending).rejects.not.toThrow("bearer");
+  });
+
+  it("reports another tool's required input without exposing upstream details", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ exc_type: "MandatoryError", exception: "frappe.exceptions.MandatoryError: [Purchase Invoice, private-invoice]: bill_no" }, { status: 417 })));
+    const pending = frappeWrite(API_TOKEN_PROPS, "Purchase Invoice", {});
+    await expect(pending).rejects.toThrow("bill_no"); await expect(pending).rejects.not.toThrow("private-invoice");
+  });
+
+  it("gives mandatory-field guidance when tracebacks are disabled", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ exc_type: "MandatoryError", _server_messages: 'private details' }, { status: 417 })));
+    const pending = frappeWrite(API_TOKEN_PROPS, "Customer", {});
+    await expect(pending).rejects.toThrow("required inputs"); await expect(pending).rejects.not.toThrow("private");
+  });
+
+  it("bounds and cancels oversized write-error bodies without exposing them", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new TextEncoder().encode('private-' + 'x'.repeat(16 * 1024))); }, cancel });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, { status: 417 })));
+    const pending = frappeWrite(API_TOKEN_PROPS, "Customer", {});
+    await expect(pending).rejects.toThrow("VALIDATION_FAILED"); await expect(pending).rejects.not.toThrow("private-");
+    expect(cancel).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { status: 417, name: undefined }, { status: 422, name: undefined },
+    { status: 417, name: "SO-EXAMPLE" }, { status: 422, name: "SO-EXAMPLE" },
+  ])("retains a known write rejection when its body times out ($status, $name)", async ({ status, name }) => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"private":"upstream-private-content"'));
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("private-abort-detail", "AbortError")));
+      },
+    }), { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = frappeWrite({ ...API_TOKEN_PROPS, requestDeadline: Date.now() + 30 }, "Sales Order", {}, name).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(30);
+    const error = await outcome;
+    expect(error).toMatchObject({ code: "VALIDATION_FAILED", retryable: false });
+    expect(error.message).toContain("check required fields");
+    expect(error.message).not.toContain("private");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].method).toBe(name ? "PUT" : "POST");
+  });
+
+  it("keeps an unconfirmed write response as a timeout when its successful body stalls", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+      },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = frappeWrite({ ...API_TOKEN_PROPS, requestDeadline: Date.now() + 30 }, "Sales Order", {}).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(30);
+    expect(await outcome).toMatchObject({ code: "UPSTREAM_TIMEOUT" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("uses the site's time zone at a UTC date boundary", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T11:30:00Z"));
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ message: { time_zone: "Pacific/Auckland" } }));

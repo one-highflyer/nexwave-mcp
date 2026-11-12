@@ -10,6 +10,13 @@ export class ToolError extends Error {
   }
 }
 
+/** Report schema paths, never supplied values or unknown object keys. */
+export function invalidWriteArguments(issues: ReadonlyArray<{ path: readonly PropertyKey[] }>, hint = ""): ToolError {
+  const paths = [...new Set(issues.map(({ path }) => path.map((part) => typeof part === "number" && Number.isSafeInteger(part) && part >= 0
+    ? `[${part}]` : typeof part === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(part) ? `.${part}` : "").join("").replace(/^\./, "")).filter(Boolean))].slice(0, 10);
+  return new ToolError("INVALID_ARGUMENT", `Check required fields and values${paths.length ? ` at: ${paths.join(", ")}` : " in the tool schema"}.${hint ? ` ${hint}` : ""}`);
+}
+
 export function textResult(value: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],

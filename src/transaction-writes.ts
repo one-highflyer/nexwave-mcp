@@ -4,7 +4,7 @@ import { documentDetails } from "./document-details";
 import { frappeGet, frappeList, frappeMapDraft, frappeSiteDate, frappeWrite } from "./frappe";
 import { sha256 } from "./security";
 import { registerWriteTool } from "./tool-contract";
-import { structuredResult, ToolError } from "./tool-result";
+import { invalidWriteArguments, structuredResult, ToolError } from "./tool-result";
 import type { Env, NexWaveAuthProps } from "./types";
 import { requireWriteAccess } from "./write-access";
 
@@ -16,18 +16,22 @@ const ITEM = {
   rate: z.number().nonnegative().max(1e12).optional().describe("Explicit rate. On create, omit to use the source rate or NexWave pricing. On an existing update row, omission retains the saved rate."), description: z.string().max(10000).optional(),
   warehouse: ID.optional(), discount_percentage: z.number().min(0).max(100).optional(),
 };
-const SO_ITEM = { ...ITEM, delivery_date: DATE.optional(), prevdoc_docname: ID.optional().describe("Exact submitted Customer or linked Lead Quotation ID; requires quotation_item."), quotation_item: ID.optional().describe("Exact source item row name, not its item code or row number.") };
+const SO_ITEM = { ...ITEM, delivery_date: DATE.describe("Required confirmed line delivery date (YYYY-MM-DD). Ask the user; do not invent a promised date."), prevdoc_docname: ID.optional().describe("Exact submitted Customer or linked Lead Quotation ID; requires quotation_item."), quotation_item: ID.optional().describe("Exact source item row name, not its item code or row number.") };
 const PI_ITEM = { ...ITEM, expense_account: ID.optional(), cost_center: ID.optional(), purchase_order: ID.optional().describe("Exact submitted Purchase Order ID; requires po_detail."), po_detail: ID.optional().describe("Exact source item row name, not its item code or row number.") };
 const COMMON = { currency: ID.optional(), taxes_and_charges: ID.optional(), payment_terms_template: ID.optional(), tc_name: ID.optional() };
-const SO_FIELDS = { ...COMMON, transaction_date: DATE.optional(), delivery_date: DATE.optional(), selling_price_list: ID.optional() };
+const SO_FIELDS = { ...COMMON, transaction_date: DATE.optional().describe("Order date. On create, omit to use the NexWave site's current date. On update, omission retains the saved date."), delivery_date: DATE.describe("Confirmed header delivery date (YYYY-MM-DD). Required on create; on update, omission retains the saved date. Native validation can adjust the header from line dates; review the saved dates."), selling_price_list: ID.optional() };
 const PI_FIELDS = { ...COMMON, posting_date: DATE.optional(), due_date: DATE.optional(), bill_no: ID.optional(), bill_date: DATE.optional(), buying_price_list: ID.optional() };
 function updateItem(fields: typeof SO_ITEM | typeof PI_ITEM) {
   return z.strictObject({ ...fields, name: ID.optional(), new_item: z.literal(true).optional() }).refine((r) => Boolean(r.name) !== Boolean(r.new_item), "Supply name for each existing row, or new_item:true for an explicitly new row.");
 }
 const ITEMS_NOTE = "Full desired item list. Every retained existing row requires its exact name from get_document; omit source fields to preserve links. New rows require new_item:true. Omitted existing rows are removed.";
+const SO_UPDATE_ITEM = z.union([
+  z.strictObject({ ...SO_ITEM, delivery_date: SO_ITEM.delivery_date.optional(), name: ID }),
+  z.strictObject({ ...SO_ITEM, new_item: z.literal(true) }),
+]);
 const SCHEMAS = {
   create_draft_sales_order: z.strictObject({ request_key: KEY, company: ID, customer: ID, ...SO_FIELDS, items: z.array(z.strictObject(SO_ITEM)).min(1).max(50) }),
-  update_draft_sales_order: z.strictObject({ request_key: KEY, name: ID, expected_modified: ID, ...SO_FIELDS, items: z.array(updateItem(SO_ITEM)).min(1).max(50).optional().describe(ITEMS_NOTE) }),
+  update_draft_sales_order: z.strictObject({ request_key: KEY, name: ID, expected_modified: ID, ...SO_FIELDS, delivery_date: SO_FIELDS.delivery_date.optional(), items: z.array(SO_UPDATE_ITEM).min(1).max(50).optional().describe(ITEMS_NOTE + " New Sales Order rows require delivery_date; named rows retain their saved delivery dates when omitted.") }),
   create_draft_purchase_invoice: z.strictObject({ request_key: KEY, company: ID, supplier: ID, ...PI_FIELDS, items: z.array(z.strictObject(PI_ITEM)).min(1).max(50) }),
   update_draft_purchase_invoice: z.strictObject({ request_key: KEY, name: ID, expected_modified: ID, ...PI_FIELDS, items: z.array(updateItem(PI_ITEM)).min(1).max(50).optional().describe(ITEMS_NOTE) }),
 };
@@ -42,8 +46,9 @@ const TAX_FIELDS = ["charge_type", "row_id", "account_head", "description", "inc
 export function registerTransactionWrites(server: McpServer, currentProps: () => Promise<NexWaveAuthProps>, env?: Env) {
   for (const name of Object.keys(SCHEMAS) as Operation[]) {
     const target = name.includes("sales_order") ? "Sales Order" : "Purchase Invoice";
+    const dateRequirements = target === "Sales Order" ? " Requires a confirmed delivery_date on the header and every item at creation; never invent dates. The header and named update rows retain saved dates when omitted; new rows require a date. Native validation can adjust the header from line dates; review the saved dates." : " Posting date, due date, UOM, rates and accounts use normal NexWave defaults when omitted. Site rules can also require source PO/receipt links or configured accounts.";
     registerWriteTool(server, name, {
-      description: `${name.startsWith("create_") ? "Create" : "Update"} one draft ${target}. Optional item source links use exact document and child row IDs. Sources must be submitted, open and match company, party and currency. A Lead quotation requires an existing Customer with that exact lead_name; expired Lead quotations require the normal NexWave workflow. Up to 50 items and 5 source documents. Updates require expected_modified and retain source links on named rows. Purchase Invoices are ordinary unpaid drafts without stock updates. Linked creates retain compatible percentage document discounts; fixed document discounts require the normal NexWave workflow. Drafts do not reserve source quantities. Review saved totals before submission.`,
+      description: `${name.startsWith("create_") ? "Create" : "Update"} one draft ${target}. Optional item source links use exact document and child row IDs. Sources must be submitted, open and match company, party and currency. A Lead quotation requires an existing Customer with that exact lead_name; expired Lead quotations require the normal NexWave workflow. Up to 50 items and 5 source documents. Updates require expected_modified and retain source links on named rows. Purchase Invoices are ordinary unpaid drafts without stock updates. Linked creates retain compatible percentage document discounts; fixed document discounts require the normal NexWave workflow. Drafts do not reserve source quantities. Review saved totals before submission.${dateRequirements}`,
       inputSchema: SCHEMAS[name],
     }, async (input) => executeTransactionWrite(env, await currentProps(), name, input));
   }
@@ -51,7 +56,7 @@ export function registerTransactionWrites(server: McpServer, currentProps: () =>
 
 export async function executeTransactionWrite(env: Env | undefined, props: NexWaveAuthProps, operation: Operation, raw: unknown) {
   const parsed = SCHEMAS[operation].safeParse(raw);
-  if (!parsed.success) throw invalid("Check required fields, valid dates, and item row names. New update rows require new_item:true.");
+  if (!parsed.success) throw invalidWriteArguments(parsed.error.issues, operation.includes("sales_order") ? "Sales Orders require delivery_date on the header and every line. New update rows require new_item:true and delivery_date; named rows retain saved dates." : "Use valid dates and exact item row names. New update rows require new_item:true.");
   const input = parsed.data as Row & { request_key: string };
   const target: Target = operation.includes("sales_order") ? "Sales Order" : "Purchase Invoice";
   const sales = target === "Sales Order";
@@ -89,8 +94,15 @@ export async function executeTransactionWrite(env: Env | undefined, props: NexWa
   const effective = { ...current, ...patch };
   if (!sales && effective.due_date && effective.posting_date && String(effective.due_date) < String(effective.posting_date)) throw invalid("Due date must not be before the posting date.");
   if (!sales && values.posting_date) patch.set_posting_time = 1;
-  if (sales && effective.delivery_date && effective.transaction_date && String(effective.delivery_date) < String(effective.transaction_date)) throw invalid("Delivery date must not be before the order date.");
   const rows = values.items ? mergeRows(values.items as Row[], current) : current ? documentRows(current) : [];
+  if (sales) {
+    const missing = [!DATE.safeParse(effective.delivery_date).success ? "delivery_date" : "", ...rows.map((row, index) => !DATE.safeParse(row.delivery_date).success ? `items[${index}].delivery_date` : "")].filter(Boolean);
+    if (missing.length) throw invalid(`Supply valid confirmed delivery dates at: ${missing.join(", ")}. Saved dates that are missing or unreadable cannot be assumed. Ask the user for the promised dates.`);
+    const orderDate = effective.transaction_date ?? (!current ? await frappeSiteDate(props) : undefined);
+    if (!DATE.safeParse(orderDate).success) throw new ToolError("UPSTREAM_INVALID_RESPONSE", "The Sales Order date could not be confirmed. Check document permissions before changing delivery dates.");
+    const earlier = [String(effective.delivery_date) < String(orderDate) ? "delivery_date" : "", ...rows.map((row, index) => String(row.delivery_date) < String(orderDate) ? `items[${index}].delivery_date` : "")].filter(Boolean);
+    if (earlier.length) throw invalid(`Delivery dates must not be before transaction_date. Check: ${earlier.join(", ")}.`);
+  }
   const parentField = sales ? "prevdoc_docname" : "purchase_order";
   const rowField = sales ? "quotation_item" : "po_detail";
   const sources = new Map<string, { document: Row; rows: Set<string> }>();

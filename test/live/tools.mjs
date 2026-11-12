@@ -486,8 +486,25 @@ try {
   assert.deepEqual(sourceQuote.items.map((row) => row.name), fixture.source_quotation_rows);
   const salesOrderArgs = { request_key: "live-sales-order-linked-create", company, customer: "MCP Buyer",
     transaction_date: "2025-01-15", delivery_date: "2025-01-20", currency: "NZD", selling_price_list: "MCP NZD",
-    items: [{ item_code: fixture.quote_items[1], qty: 3, uom: "Nos",
+    items: [{ item_code: fixture.quote_items[1], qty: 3, uom: "Nos", delivery_date: "2025-01-20",
       prevdoc_docname: sourceQuote.name, quotation_item: sourceQuote.items[1].name }] };
+  const beforeMissingOrderDates = upstreamCalls;
+  const beforeMissingOrderReservations = await db.prepare("SELECT COUNT(*) AS count FROM write_requests").first("count");
+  const { delivery_date: omittedHeaderDate, ...withoutHeaderDate } = salesOrderArgs;
+  const { delivery_date: omittedLineDate, ...withoutLineDate } = salesOrderArgs.items[0];
+  for (const argumentsWithMissingDate of [
+    { ...withoutHeaderDate, request_key: "live-sales-order-missing-header-date" },
+    { ...salesOrderArgs, request_key: "live-sales-order-missing-line-date", items: [withoutLineDate] },
+  ]) {
+    const missingDateResult = await rpc("all", "tools/call", { name: "create_draft_sales_order", arguments: argumentsWithMissingDate });
+    assert.equal(missingDateResult.isError, true);
+    assert.match(missingDateResult.content[0].text, /^Input validation (failed|error)/);
+    assert.match(missingDateResult.content[0].text, /delivery_date/);
+    checks++;
+  }
+  assert.equal(upstreamCalls, beforeMissingOrderDates, "Missing required delivery dates must fail before upstream requests");
+  assert.equal(await db.prepare("SELECT COUNT(*) AS count FROM write_requests").first("count"), beforeMissingOrderReservations,
+    "Missing required delivery dates must not reserve a request key");
   const beforeOrderDenied = upstreamCalls;
   await call("readonly", "create_draft_sales_order", salesOrderArgs, "PERMISSION_DENIED");
   await call("restricted", "create_draft_sales_order", salesOrderArgs, "PERMISSION_DENIED");
@@ -512,6 +529,9 @@ try {
   const updatedSalesOrder = await call("all", "update_draft_sales_order", salesOrderUpdate);
   assert.equal(updatedSalesOrder.document.additional_discount_percentage, 10);
   assert.equal(updatedSalesOrder.document.grand_total, 162);
+  assert.equal(updatedSalesOrder.document.delivery_date, savedSalesOrder.delivery_date);
+  assert.equal(updatedSalesOrder.document.items[0].delivery_date, savedSalesOrder.items[0].delivery_date,
+    "A named-row quantity update must retain its omitted saved delivery date");
   assert.deepEqual(updatedSalesOrder.document.items.map((row) => [row.name, row.qty, row.prevdoc_docname, row.quotation_item]), [
     [savedSalesOrder.items[0].name, 4, sourceQuote.name, sourceQuote.items[1].name],
   ], "A quantity update must preserve the target child name and omitted source references");
@@ -527,9 +547,12 @@ try {
   const standaloneSalesOrder = await call("all", "create_draft_sales_order", {
     request_key: "live-sales-order-standalone-create", company, customer: "MCP Future",
     transaction_date: "2025-01-15", delivery_date: "2025-01-20", currency: "NZD", selling_price_list: "MCP NZD",
-    items: [{ item_code: fixture.quote_items[1], qty: 1, uom: "Nos", rate: 40 }] });
+    items: [{ item_code: fixture.quote_items[1], qty: 1, uom: "Nos", rate: 40, delivery_date: "2025-01-20" },
+      { item_code: fixture.quote_items[0], qty: 1, uom: "Nos", rate: 25, delivery_date: "2025-01-22" }] });
   assert.equal(standaloneSalesOrder.document.docstatus, 0);
   assert.ok(!standaloneSalesOrder.document.items[0].quotation_item);
+  assert.deepEqual(standaloneSalesOrder.document.items.map((row) => row.delivery_date), ["2025-01-20", "2025-01-22"]);
+  assert.equal(standaloneSalesOrder.document.delivery_date, "2025-01-22", "Native validation must save the latest line delivery date on the header");
 
   // The quotation was submitted for the Lead before its Customer was created above.
   const sourceLeadQuote = await call("all", "get_document", { doctype: "Quotation", name: fixture.lead_quotation });
@@ -556,7 +579,7 @@ try {
   const hiddenExpiryResult = await rpc("expiry_hidden", "tools/call", { name: "create_draft_sales_order",
     arguments: { ...salesOrderArgs,
       request_key: "live-lead-sales-order-hidden-expiry", customer: convertedCustomer.name,
-      items: [{ item_code: fixture.quote_items[1], qty: 3, prevdoc_docname: sourceLeadQuote.name,
+      items: [{ item_code: fixture.quote_items[1], qty: 3, delivery_date: "2025-01-20", prevdoc_docname: sourceLeadQuote.name,
         quotation_item: sourceLeadQuote.items[1].name }] } });
   assert.equal(hiddenExpiryResult.isError, true);
   const hiddenExpiryError = JSON.parse(hiddenExpiryResult.content[0].text).error;
@@ -568,7 +591,7 @@ try {
   const leadOrder = await call("all", "create_draft_sales_order", { ...salesOrderArgs,
     request_key: "live-lead-sales-order-create", customer: convertedCustomer.name,
     payment_terms_template: fixture.payment_terms,
-    items: [{ item_code: fixture.quote_items[1], qty: 3, prevdoc_docname: sourceLeadQuote.name,
+    items: [{ item_code: fixture.quote_items[1], qty: 3, delivery_date: "2025-01-20", prevdoc_docname: sourceLeadQuote.name,
       quotation_item: sourceLeadQuote.items[1].name }] });
   assert.equal(leadOrder.document.additional_discount_percentage, 10);
   assert.equal(leadOrder.document.items[0].rate, sourceLeadQuote.items[1].rate);
@@ -580,6 +603,8 @@ try {
     items: [{ name: leadOrder.document.items[0].name, item_code: fixture.quote_items[1], qty: 4 }] });
   assert.equal(leadOrderUpdated.document.items[0].quotation_item, sourceLeadQuote.items[1].name);
   assert.equal(leadOrderUpdated.document.items[0].prevdoc_docname, sourceLeadQuote.name);
+  assert.equal(leadOrderUpdated.document.delivery_date, leadOrder.document.delivery_date);
+  assert.equal(leadOrderUpdated.document.items[0].delivery_date, leadOrder.document.items[0].delivery_date);
   const customerLinksQuery = new URLSearchParams({ fields: JSON.stringify(["name"]),
     filters: JSON.stringify([["lead_name", "=", fixture.conversion_lead]]) });
   const linkedCustomers = await backendRequest("all", `/api/resource/Customer?${customerLinksQuery}`);

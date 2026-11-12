@@ -46,15 +46,15 @@ function source(mode: Mode, name = mode.sourceId): Row {
 function draft(mode: Mode): Row {
   return { name: "DRAFT-1", doctype: mode.target, docstatus: 0, modified, company: "Example Company", currency: "NZD",
     [mode.party]: mode.partyId, transaction_date: "2025-01-10", posting_date: "2025-01-10", delivery_date: "2025-01-20",
-    items: [{ name: "TARGET-ROW-1", ...item, rate: 12 }], grand_total: 27.6 };
+    items: [{ name: "TARGET-ROW-1", ...item, ...(mode.party === "customer" ? { delivery_date: "2025-01-20" } : {}), rate: 12 }], grand_total: 27.6 };
 }
 function create(mode: Mode, extra: Row = {}) {
-  return { request_key: "test-create-1", company: "Example Company", [mode.party]: mode.partyId, items: [{ ...item }], ...extra };
+  return { request_key: "test-create-1", company: "Example Company", [mode.party]: mode.partyId, items: [{ ...item, ...(mode.party === "customer" ? { delivery_date: "2025-01-20" } : {}) }], ...(mode.party === "customer" ? { transaction_date: "2025-01-10", delivery_date: "2025-01-20" } : {}), ...extra };
 }
 function update(mode: Mode, extra: Row = {}) {
   return { request_key: "test-update-1", name: "DRAFT-1", expected_modified: modified, ...extra };
 }
-function linked(mode: Mode, extra: Row = {}): Row { return { ...item, [mode.parent]: mode.sourceId, [mode.child]: "SOURCE-ROW-1", ...extra }; }
+function linked(mode: Mode, extra: Row = {}): Row { return { ...item, ...(mode.party === "customer" ? { delivery_date: "2025-01-20" } : {}), [mode.parent]: mode.sourceId, [mode.child]: "SOURCE-ROW-1", ...extra }; }
 
 function upstream(mode: Mode) {
   const state = {
@@ -510,6 +510,55 @@ describe.each(modes)("$target draft writes", (mode) => {
 });
 
 describe("transaction-specific controls", () => {
+  it("names missing header and line delivery dates before any request", async () => {
+    const mode = modes[0]; const up = upstream(mode); const ctx = environment();
+    const input = create(mode, { items: [{ ...item }, { ...item }] }); delete input.delivery_date;
+    const pending = executeTransactionWrite(ctx.env, props, mode.create, input);
+    await expect(pending).rejects.toThrow("delivery_date");
+    await expect(pending).rejects.toThrow("items[0].delivery_date");
+    await expect(pending).rejects.toThrow("items[1].delivery_date");
+    expect(up.mock).not.toHaveBeenCalled(); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it.each(["2025-02-30", "not-a-date"])("rejects an invalid delivery date %s before any request", async (delivery_date) => {
+    const mode = modes[0]; const up = upstream(mode); const ctx = environment();
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, create(mode, { delivery_date }))).rejects.toThrow("delivery_date");
+    expect(up.mock).not.toHaveBeenCalled(); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("names each delivery date before the order date", async () => {
+    const mode = modes[0]; const up = upstream(mode); const ctx = environment();
+    const pending = executeTransactionWrite(ctx.env, props, mode.create, create(mode, { delivery_date: "2025-01-09", items: [{ ...item, delivery_date: "2025-01-08" }] }));
+    await expect(pending).rejects.toThrow("transaction_date");
+    await expect(pending).rejects.toThrow("items[0].delivery_date");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("uses the site date when the order date is defaulted", async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date("2030-01-01T11:30:00Z"));
+    const mode = modes[0]; const up = upstream(mode); const ctx = environment();
+    up.state.before = (url) => url.pathname.endsWith("get_time_zone") ? Response.json({ message: { time_zone: "Pacific/Auckland" } }) : undefined;
+    const input = create(mode, { delivery_date: "2030-01-01", items: [{ ...item, delivery_date: "2030-01-01" }] }); delete input.transaction_date;
+    await expect(executeTransactionWrite(ctx.env, props, mode.create, input)).rejects.toThrow("transaction_date");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it.each(["header", "line"])("refuses an existing order with a missing or hidden %s date", async (scope) => {
+    const mode = modes[0]; const up = upstream(mode); const ctx = environment();
+    if (scope === "header") delete up.state.current.delivery_date; else delete up.state.current.items[0].delivery_date;
+    await expect(executeTransactionWrite(ctx.env, props, mode.update, update(mode, { transaction_date: "2025-01-11", items: [{ name: "TARGET-ROW-1", ...item }] }))).rejects.toThrow(scope === "header" ? "delivery_date" : "items[0].delivery_date");
+    expect(up.saves()).toHaveLength(0); expect(ctx.reservations.size).toBe(0);
+  });
+
+  it("retains saved dates on named rows and requires a confirmed date on new rows", async () => {
+    const mode = modes[0]; const up = upstream(mode); const ctx = environment();
+    await executeTransactionWrite(ctx.env, props, mode.update, update(mode, { items: [{ name: "TARGET-ROW-1", ...item, qty: 3 }] }));
+    expect(up.savedBody().items[0].delivery_date).toBe("2025-01-20");
+    expect(up.savedBody()).not.toHaveProperty("delivery_date");
+    await expect(executeTransactionWrite(ctx.env, props, mode.update, update(mode, { request_key: "new-row-missing-date", items: [{ new_item: true, ...item }] }))).rejects.toThrow("delivery_date");
+    expect(up.saves()).toHaveLength(1);
+  });
+
   it("preserves the native Maintenance order type from a linked quotation", async () => {
     const mode = modes[0]; const up = upstream(mode);
     up.state.sources.get(mode.sourceId)!.order_type = "Maintenance";
