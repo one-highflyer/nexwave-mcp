@@ -422,7 +422,8 @@ async function frappeFetchAttempt<T>(
     }
     return payload as T;
   } catch (error) {
-    const safe = controller.signal.aborted
+    // A failed optional error-body read does not undo a known server rejection.
+    const safe = error instanceof ToolError && error.code === "VALIDATION_FAILED" ? error : controller.signal.aborted
       ? new ToolError("UPSTREAM_TIMEOUT", "NexWave did not respond in time. Do not treat this as no matching records.", true)
       : error instanceof ToolError ? error
       : new ToolError("UPSTREAM_UNAVAILABLE", "The NexWave request failed. Please try again later.", true);

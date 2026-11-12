@@ -68,6 +68,42 @@ describe("Frappe REST client", () => {
     expect(cancel).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    { status: 417, name: undefined }, { status: 422, name: undefined },
+    { status: 417, name: "SO-EXAMPLE" }, { status: 422, name: "SO-EXAMPLE" },
+  ])("retains a known write rejection when its body times out ($status, $name)", async ({ status, name }) => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"private":"upstream-private-content"'));
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("private-abort-detail", "AbortError")));
+      },
+    }), { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = frappeWrite({ ...API_TOKEN_PROPS, requestDeadline: Date.now() + 30 }, "Sales Order", {}, name).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(30);
+    const error = await outcome;
+    expect(error).toMatchObject({ code: "VALIDATION_FAILED", retryable: false });
+    expect(error.message).toContain("check required fields");
+    expect(error.message).not.toContain("private");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].method).toBe(name ? "PUT" : "POST");
+  });
+
+  it("keeps an unconfirmed write response as a timeout when its successful body stalls", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn((_url, init: RequestInit) => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        init.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+      },
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const outcome = frappeWrite({ ...API_TOKEN_PROPS, requestDeadline: Date.now() + 30 }, "Sales Order", {}).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(30);
+    expect(await outcome).toMatchObject({ code: "UPSTREAM_TIMEOUT" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("uses the site's time zone at a UTC date boundary", async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date("2026-01-01T11:30:00Z"));
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ message: { time_zone: "Pacific/Auckland" } }));
