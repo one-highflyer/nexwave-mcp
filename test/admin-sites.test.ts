@@ -16,6 +16,11 @@ describe("admin site authentication modes", () => {
     expect(html).toContain('value="oauth"');
     expect(html).toContain('value="api_token"');
     expect(html).toContain('id="service-token-panel"');
+    expect(html).toContain('id="access-form"');
+    expect(html).toContain('href="/admin.css"');
+    expect(html).toContain('src="/admin.js"');
+    expect(response.headers.get("Content-Security-Policy")).toContain("script-src 'self'");
+    expect(response.headers.get("Content-Security-Policy")).not.toContain("unsafe-inline");
   });
 
   it("verifies and stores a fixed API token, then returns a one-time service token", async () => {

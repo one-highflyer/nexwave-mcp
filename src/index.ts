@@ -15,7 +15,7 @@ const apiHandler = {
 const defaultHandler: ExportedHandler<Env> = {
   async fetch(request, env, ctx) {
     const path = new URL(request.url).pathname;
-    if (path === "/favicon.ico" || path === "/brand/nexwave-logo.png") {
+    if (["/favicon.ico", "/brand/nexwave-logo.png", "/admin.css", "/admin.js"].includes(path)) {
       return env.ASSETS.fetch(request);
     }
 
